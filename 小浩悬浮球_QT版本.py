@@ -9,15 +9,15 @@ import re
 from PyQt5.QtWidgets import (
     QApplication, QWidget, QMenu, QAction, QVBoxLayout,
     QHBoxLayout, QLabel, QTextEdit, QPushButton, QInputDialog,
-    QSystemTrayIcon
+    QSystemTrayIcon, QMessageBox
 )
 from PyQt5.QtGui import (
     QPainter, QPen, QColor, QImage, QPixmap, QFont, QFontDatabase,
-    QLinearGradient, QBrush, QRadialGradient, QIcon
+    QLinearGradient, QBrush, QRadialGradient, QIcon, QDesktopServices
 )
 from PyQt5.QtCore import (
     Qt, QPoint, QRect, QSize, QTimer, QRunnable, QThreadPool,
-    pyqtSignal, QObject, QThread
+    pyqtSignal, QObject, QThread, QUrl
 )
 import psutil
 import GPUtil
@@ -3239,6 +3239,62 @@ class FloatingBall(QWidget):
         close_action = QAction("关闭", self)
         close_action.triggered.connect(self.close)
         menu.addAction(close_action)
+
+        # 底部：关于我们与抖音链接
+        menu.addSeparator()
+
+        def show_about():
+            try:
+                about = QMessageBox(self)
+                about.setWindowTitle("关于我们")
+                about.setIcon(QMessageBox.Information)
+                
+                # 设置Logo
+                try:
+                    logo_path = get_resource_path(os.path.join("Resources", "logo.png"))
+                    pix = QPixmap(logo_path)
+                    if not pix.isNull():
+                        about.setIconPixmap(pix.scaled(64, 64, Qt.KeepAspectRatio, Qt.SmoothTransformation))
+                except Exception as ie:
+                    logger.warning(f"加载关于窗口Logo失败: {ie}")
+                
+                # 富文本内容
+                html = (
+                    "<div style='font-size:14px; line-height:1.6;'>"
+                    "<h3 style='margin:0 0 8px;'>浩讯亿通悬浮球</h3>"
+                    "<p style='margin:6px 0;color:#555;'>开源 · 免费 · 安全 · 可靠 · 实用 · 绿色</p>"
+                    "<p style='margin:6px 0;'>官方网站："
+                    "<a href='https://haoxunyitong.com/' style='color:#1677FF;text-decoration:none;'>haoxunyitong.com</a></p>"
+                    "<p style='margin:6px 0;'>团队：浩讯亿通技术开发团队</p>"
+                    "<p style='margin:6px 0;'>反馈邮箱："
+                    "<a href='mailto:zhangyuhao@haoxun.cc' style='color:#1677FF;text-decoration:none;'>zhangyuhao@haoxun.cc</a></p>"
+                    "<hr style='margin:10px 0; border: none; border-top: 1px solid #eee;'/>"
+                    "<p style='margin:6px 0;color:#999;'>版权信息 © 2025 烟台浩讯网络有限责任公司</p>"
+                    "</div>"
+                )
+                about.setTextFormat(Qt.RichText)
+                about.setTextInteractionFlags(Qt.TextBrowserInteraction)
+                about.setText(html)
+                about.exec_()
+            except Exception as e:
+                logger.error(f"显示关于我们时出错: {e}")
+
+        about_action = QAction("关于我们", self)
+        about_action.triggered.connect(show_about)
+        menu.addAction(about_action)
+
+        def open_douyin():
+            try:
+                # 使用搜索页链接，若有固定主页链接可替换此URL
+                url = QUrl("https://www.douyin.com/search/%E6%B5%A9%E8%AE%AF%E4%BA%BF%E9%80%9A")
+                QDesktopServices.openUrl(url)
+            except Exception as e:
+                logger.error(f"打开抖音链接失败: {e}")
+
+        douyin_action = QAction("抖音账号", self)
+        douyin_action.setToolTip("跳转到抖音账号页面")
+        douyin_action.triggered.connect(open_douyin)
+        menu.addAction(douyin_action)
         
         menu.exec_(position)
         
@@ -3397,6 +3453,61 @@ class FloatingBall(QWidget):
         exit_action = QAction("退出", self)
         exit_action.triggered.connect(QApplication.quit)
         self.tray_menu.addAction(exit_action)
+
+        # 底部：关于我们与抖音链接
+        self.tray_menu.addSeparator()
+
+        def show_about_tray():
+            try:
+                about = QMessageBox(self)
+                about.setWindowTitle("关于我们")
+                about.setIcon(QMessageBox.Information)
+                
+                # 设置Logo
+                try:
+                    logo_path = get_resource_path(os.path.join("Resources", "logo.png"))
+                    pix = QPixmap(logo_path)
+                    if not pix.isNull():
+                        about.setIconPixmap(pix.scaled(64, 64, Qt.KeepAspectRatio, Qt.SmoothTransformation))
+                except Exception as ie:
+                    logger.warning(f"加载关于窗口Logo失败: {ie}")
+                
+                # 富文本内容
+                html = (
+                    "<div style='font-size:14px; line-height:1.6;'>"
+                    "<h3 style='margin:0 0 8px;'>浩讯亿通悬浮球</h3>"
+                    "<p style='margin:6px 0;color:#555;'>开源 · 免费 · 安全 · 可靠 · 实用 · 绿色</p>"
+                    "<p style='margin:6px 0;'>官方网站："
+                    "<a href='https://haoxunyitong.com/' style='color:#1677FF;text-decoration:none;'>haoxunyitong.com</a></p>"
+                    "<p style='margin:6px 0;'>团队：浩讯亿通技术开发团队</p>"
+                    "<p style='margin:6px 0;'>反馈邮箱："
+                    "<a href='mailto:zhangyuhao@haoxun.cc' style='color:#1677FF;text-decoration:none;'>zhangyuhao@haoxun.cc</a></p>"
+                    "<hr style='margin:10px 0; border: none; border-top: 1px solid #eee;'/>"
+                    "<p style='margin:6px 0;color:#999;'>版权信息 © 2025 烟台浩讯网络有限责任公司</p>"
+                    "</div>"
+                )
+                about.setTextFormat(Qt.RichText)
+                about.setTextInteractionFlags(Qt.TextBrowserInteraction)
+                about.setText(html)
+                about.exec_()
+            except Exception as e:
+                logger.error(f"显示关于我们(托盘)时出错: {e}")
+
+        about_action_tray = QAction("关于我们", self)
+        about_action_tray.triggered.connect(show_about_tray)
+        self.tray_menu.addAction(about_action_tray)
+
+        def open_douyin_tray():
+            try:
+                url = QUrl("https://www.douyin.com/user/MS4wLjABAAAA3viO1RlIP57VR5hCdsww1mrqiRcNEeembHHdVvfx0ck?from_tab_name=main")
+                QDesktopServices.openUrl(url)
+            except Exception as e:
+                logger.error(f"打开抖音链接(托盘)失败: {e}")
+
+        douyin_action_tray = QAction("抖音账号", self)
+        douyin_action_tray.setToolTip("跳转到抖音账号页面")
+        douyin_action_tray.triggered.connect(open_douyin_tray)
+        self.tray_menu.addAction(douyin_action_tray)
         
         # 先更新托盘图标温度显示
         self.update_tray_icon()
