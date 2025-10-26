@@ -8,6 +8,8 @@
 <img width="586" height="458" alt="屏幕截图 2025-10-25 223322" src="https://github.com/user-attachments/assets/708a551c-a710-4696-ab2d-f35ea69eb58e" />
 <img width="278" height="473" alt="屏幕截图 2025-10-25 223336" src="https://github.com/user-attachments/assets/9adc5d64-e36b-4167-9b73-058612a63404" />
 <img width="444" height="443" alt="屏幕截图 2025-10-25 223351" src="https://github.com/user-attachments/assets/a4cadc80-21a1-4963-9b06-59cfba11b905" />
+
+
 项目开发日志： 2025年10月10日 初代程序版本1.0 1.发布了初代产品程序1.0
               25/10/26 1.新增加fps游戏帧数获取和显示，游戏内电脑信息显示
                        2.新增缓存清理功能
