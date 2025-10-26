@@ -293,6 +293,44 @@ LAUNCHER_PROCESSES = {
 import ctypes
 from ctypes import wintypes
 
+# ---------------- 单实例检测（Windows命名互斥）----------------
+_single_instance_mutex = None
+
+def ensure_single_instance(unique_name="Local\\HaoxunFloatingBall_QT_SingleInstance"):
+    """
+    使用Windows命名互斥锁确保单实例运行。
+    返回True表示可以启动（未检测到其它实例）；False表示已有实例在运行。
+    """
+    try:
+        if os.name != "nt":
+            return True
+        kernel32 = ctypes.windll.kernel32
+        handle = kernel32.CreateMutexW(None, False, unique_name)
+        err = kernel32.GetLastError()
+        # 保存句柄避免被GC提前释放
+        global _single_instance_mutex
+        _single_instance_mutex = handle
+        # ERROR_ALREADY_EXISTS = 183
+        return err != 183
+    except Exception as e:
+        try:
+            logger.warning(f"单实例检测失败，忽略并继续启动: {e}")
+        except Exception:
+            pass
+        return True
+
+
+def _show_running_message_and_exit():
+    """弹窗提示程序已运行，并退出当前进程。"""
+    msg = "程序已在运行，当前启动已取消。"
+    title = "提示"
+    try:
+        # MB_ICONWARNING = 0x30
+        ctypes.windll.user32.MessageBoxW(0, msg, title, 0x30)
+    except Exception:
+        print(msg)
+    sys.exit(0)
+
 # 定义必要的Windows API常量和结构
 try:
     dxgi = ctypes.windll.dxgi
@@ -3615,6 +3653,16 @@ if __name__ == "__main__":
     except Exception as e:
         logger.error(f"设置Qt环境变量时出错: {e}")
         print(f"设置Qt环境变量时出错: {e}")
+    
+    # 单实例检测：若已运行则弹窗并退出
+    try:
+        if not ensure_single_instance():
+            logger.warning("检测到程序已在运行，当前启动已取消")
+            _show_running_message_and_exit()
+        else:
+            logger.info("单实例检测通过")
+    except Exception as e:
+        logger.error(f"单实例检测异常: {e}")
     
     # 然后创建应用实例
     try:
