@@ -9,7 +9,7 @@ import re
 from PyQt5.QtWidgets import (
     QApplication, QWidget, QMenu, QAction, QVBoxLayout,
     QHBoxLayout, QLabel, QTextEdit, QPushButton, QInputDialog,
-    QSystemTrayIcon, QMessageBox
+    QSystemTrayIcon, QMessageBox, QColorDialog, QDialog, QLineEdit, QFormLayout
 )
 from PyQt5.QtGui import (
     QPainter, QPen, QColor, QImage, QPixmap, QFont, QFontDatabase,
@@ -77,6 +77,7 @@ CUSTOM_NON_GAME_PROCESSES = set()
 CUSTOM_NON_GAME_TITLE_KEYWORDS = set()
 STRICT_NON_GAME_FULLSCREEN = True
 DEBUG_LOG = False
+SAFE_PACKAGED_MODE = hasattr(sys, '_MEIPASS') or getattr(sys, 'frozen', False)
 
 # 旧系统兼容标志：Windows 10 以下视为旧系统
 try:
@@ -192,33 +193,210 @@ class Logger:
 # 创建全局日志记录器实例
 logger = Logger()
 
+# 颜色辅助：将十六进制颜色加透明度转换为QColor
+def _color_with_alpha_hex(hex_str, alpha):
+    c = QColor(str(hex_str))
+    if not c.isValid():
+        c = QColor('#FFFFFF')
+    c.setAlpha(int(alpha))
+    return c
+
+# 优雅的颜色设置对话框（简约美化版）
+class ColorSettingsDialog(QDialog):
+    def __init__(self, parent=None, initial_settings=None):
+        super().__init__(parent)
+        self.setWindowTitle("颜色设置")
+        self.setModal(True)
+        self.setWindowFlags(self.windowFlags() & ~Qt.WindowContextHelpButtonHint)
+        self.resize(520, 360)
+        self._fields = {}
+
+        # 默认值
+        self.defaults = {
+            "hud_text_color": "#FFD700",
+            "fps_text_color": "#FFFFFF",
+            "fps_color_high": "#00FF00",
+            "fps_color_mid": "#00BFFF",
+            "fps_color_low": "#FF0000",
+        }
+        # 初始值
+        init = dict(self.defaults)
+        if isinstance(initial_settings, dict):
+            init.update({k: str(v).upper() for k, v in initial_settings.items() if k in self.defaults})
+
+        # 统一样式（简约深色风格）
+        self.setStyleSheet(
+            """
+            QDialog { background:#1F1F1F; color:#E8EAED; }
+            QLabel { color:#CFCFCF; font-size:14px; }
+            QLineEdit { background:#2A2A2A; border:1px solid #444; border-radius:8px; padding:8px 10px; color:#E8EAED; }
+            QLineEdit[invalid="true"] { border:1px solid #E53935; }
+            QPushButton { background:#3B82F6; color:white; border:none; border-radius:8px; padding:8px 16px; font-weight:500; }
+            QPushButton:hover { background:#4F8EF9; }
+            QPushButton:disabled { background:#2F6AD6; color:#E0E0E0; }
+            QPushButton#linkBtn { background:transparent; color:#9AA0A6; padding:4px 6px; }
+            QPushButton#linkBtn:hover { color:#B0B6BC; text-decoration: underline; }
+            /* 圆形色块按钮 */
+            QPushButton#swatch { min-width:28px; max-width:28px; min-height:28px; max-height:28px; border:1px solid #555; border-radius:14px; background:#FFFFFF; }
+            """
+        )
+
+        main_layout = QVBoxLayout(self)
+        main_layout.setContentsMargins(18, 18, 18, 18)
+        main_layout.setSpacing(12)
+
+        # 顶部说明
+        title = QLabel("请选择悬浮球与HUD相关颜色")
+        title.setStyleSheet("font-size:16px; color:#E8EAED; font-weight:600;")
+        subtitle = QLabel("点击色块快速选色，输入框支持手动填入 #RRGGBB")
+        subtitle.setStyleSheet("color:#9AA0A6; font-size:12px;")
+        main_layout.addWidget(title)
+        main_layout.addWidget(subtitle)
+
+        form = QFormLayout()
+        form.setSpacing(12)
+
+        def make_row(key, label_text):
+            row = QWidget(self)
+            hl = QHBoxLayout(row)
+            hl.setContentsMargins(0, 0, 0, 0)
+            hl.setSpacing(10)
+
+            # 圆形色块按钮，可点击选色
+            swatch = QPushButton("")
+            swatch.setObjectName("swatch")
+            swatch.setCursor(Qt.PointingHandCursor)
+
+            edit = QLineEdit()
+            edit.setPlaceholderText("#RRGGBB")
+            edit.setMaxLength(7)
+            edit.setText(str(init.get(key, self.defaults[key])).upper())
+
+            def _apply_color_to_swatch(hex_str):
+                s = str(hex_str).strip().upper()
+                if re.match(r"^#[0-9A-F]{6}$", s or ""):
+                    swatch.setStyleSheet(f"#swatch{{ background:{s}; border:1px solid #555; border-radius:14px; }}")
+                    edit.setProperty("invalid", False)
+                else:
+                    swatch.setStyleSheet("#swatch{ background:transparent; border:1px solid #555; border-radius:14px; }")
+                    edit.setProperty("invalid", True)
+                edit.style().unpolish(edit)
+                edit.style().polish(edit)
+
+            def on_pick():
+                current_hex = edit.text().strip() or self.defaults[key]
+                color = QColorDialog.getColor(QColor(current_hex), self, f"选择{label_text}")
+                if color.isValid():
+                    edit.setText(color.name().upper())
+                    _apply_color_to_swatch(color.name().upper())
+
+            def on_edit_change(text):
+                s = str(text).strip().upper()
+                if s and not s.startswith('#'):
+                    s = '#' + s
+                _apply_color_to_swatch(s)
+
+            swatch.clicked.connect(on_pick)
+            edit.textChanged.connect(on_edit_change)
+            _apply_color_to_swatch(edit.text())
+
+            hl.addWidget(swatch)
+            hl.addWidget(edit, 1)
+
+            form.addRow(label_text, row)
+            self._fields[key] = edit
+
+        make_row("hud_text_color", "HUD文字颜色")
+        make_row("fps_text_color", "中心文本颜色")
+        make_row("fps_color_high", "FPS高阈值颜色")
+        make_row("fps_color_mid", "FPS中阈值颜色")
+        make_row("fps_color_low", "FPS低阈值颜色")
+
+        main_layout.addLayout(form)
+
+        # 底部按钮区
+        btn_row = QWidget(self)
+        br = QHBoxLayout(btn_row)
+        br.setContentsMargins(0, 0, 0, 0)
+        br.setSpacing(10)
+        btn_reset = QPushButton("还原默认")
+        btn_reset.setObjectName("linkBtn")
+        btn_ok = QPushButton("保存")
+        btn_ok.setDefault(True)
+        btn_cancel = QPushButton("取消")
+
+        def on_reset():
+            for k, edit in self._fields.items():
+                edit.setText(self.defaults.get(k, "#FFFFFF"))
+        btn_reset.clicked.connect(on_reset)
+
+        btn_cancel.clicked.connect(self.reject)
+
+        def on_ok():
+            self.result_values = {}
+            for k, edit in self._fields.items():
+                v = str(edit.text()).strip().upper()
+                if not re.match(r"^#[0-9A-F]{6}$", v or ""):
+                    v = self.defaults.get(k, "#FFFFFF")
+                self.result_values[k] = v
+            self.accept()
+        btn_ok.clicked.connect(on_ok)
+
+        br.addWidget(btn_reset)
+        br.addStretch(1)
+        br.addWidget(btn_cancel)
+        br.addWidget(btn_ok)
+
+        main_layout.addSpacing(6)
+        main_layout.addWidget(btn_row)
+
+    def get_values(self):
+        return getattr(self, 'result_values', None)
+
+
 def log_debug(msg):
     """兼容旧版本的日志函数"""
     logger.debug(msg)
 
 # 修复资源路径问题
-def resource_path(relative_path):
-    """获取资源文件的绝对路径"""
-    try:
-        # PyInstaller 创建临时文件夹,将路径存储于_MEIPASS
-        base_path = sys._MEIPASS
-    except Exception:
-        base_path = os.path.abspath(".")
-    
-    return os.path.join(base_path, relative_path)
-
-# 确定基础路径，支持PyInstaller打包
 def get_base_path():
-    if hasattr(sys, '_MEIPASS'):
-        # 运行在PyInstaller打包后的环境中
-        return sys._MEIPASS
-    else:
-        # 直接运行Python脚本
+    """确定基础路径，支持PyInstaller打包"""
+    try:
+        if hasattr(sys, '_MEIPASS'):
+            # 运行在PyInstaller打包后的环境中
+            return sys._MEIPASS
+        else:
+            # 直接运行Python脚本
+            return os.path.abspath('.')
+    except Exception as e:
+        logger.warning(f"获取基础路径失败: {e}")
         return os.path.abspath('.')
 
 # 获取资源文件的绝对路径
 def get_resource_path(relative_path):
-    return os.path.join(get_base_path(), relative_path)
+    """获取资源文件的绝对路径，提供更好的错误处理"""
+    try:
+        base_path = get_base_path()
+        # 尝试多种可能的资源路径
+        possible_paths = [
+            os.path.join(base_path, relative_path),  # 直接路径
+            os.path.join(base_path, 'Resources', os.path.basename(relative_path)),  # 只使用文件名
+            os.path.join(os.path.dirname(base_path), relative_path)  # 父目录路径
+        ]
+        
+        # 返回第一个存在的路径
+        for path in possible_paths:
+            if os.path.exists(path):
+                return path
+        
+        # 如果都不存在，返回原始组合路径
+        return os.path.join(base_path, relative_path)
+    except Exception as e:
+        logger.warning(f"获取资源路径失败: {e}")
+        return relative_path
+
+# 兼容旧版本的resource_path函数
+resource_path = get_resource_path
 
 # 常见游戏进程名称列表 - 扩展版本
 COMMON_GAME_PROCESSES = [
@@ -331,10 +509,17 @@ def _show_running_message_and_exit():
         print(msg)
     sys.exit(0)
 
-# 定义必要的Windows API常量和结构
+# 定义必要的Windows API常量和结构（DXGI按需懒加载，打包环境禁用）
+dxgi = None
+DXGI_SUPPORTED = False
 try:
-    dxgi = ctypes.windll.dxgi
-    DXGI_SUPPORTED = True
+    # 仅在非打包环境且为Windows时尝试加载DXGI，避免某些系统/打包下不稳定
+    if os.name == 'nt' and not hasattr(sys, '_MEIPASS'):
+        dxgi = ctypes.windll.dxgi
+        if hasattr(dxgi, 'DXGIGetDebugInterface1'):
+            dxgi.DXGIGetDebugInterface1.restype = ctypes.c_int
+            dxgi.DXGIGetDebugInterface1.argtypes = [ctypes.c_uint, ctypes.POINTER(ctypes.c_void_p)]
+            DXGI_SUPPORTED = True
 except Exception:
     dxgi = None
     DXGI_SUPPORTED = False
@@ -366,13 +551,6 @@ class DXGI_ADAPTER_DESC(ctypes.Structure):
         ("SharedSystemMemory", ctypes.c_uint64),
         ("AdapterLuid", LUID),
     ]
-
-# 定义函数原型
-if DXGI_SUPPORTED and hasattr(dxgi, 'DXGIGetDebugInterface1'):
-    dxgi.DXGIGetDebugInterface1.restype = ctypes.c_int
-    dxgi.DXGIGetDebugInterface1.argtypes = [ctypes.c_uint, ctypes.POINTER(ctypes.c_void_p)]
-else:
-    DXGI_SUPPORTED = False
 
 # 工作线程类，用于获取系统信息
 class SystemInfoWorker(QThread):
@@ -462,81 +640,171 @@ class SystemInfoWorker(QThread):
         self.wait()
     
     def _get_cpu_temperature_celsius(self):
-        # 尝试通过psutil读取CPU温度（最安全，无弹窗风险）
+        """更健壮的CPU温度获取：优先psutil，回退OpenHardwareMonitor(WMI)，再回退ACPI热区温度。
+        - 保证在打包环境也尽量有值（检测到OHM进程则允许WMI）。
+        - 过滤异常值并与之前读数平滑过渡。
+        """
+        # 1) psutil（若支持则最稳妥）
         try:
-            temps = psutil.sensors_temperatures()
+            temps = psutil.sensors_temperatures(fahrenheit=False)
             candidates = []
-            for name, entries in temps.items():
-                for entry in entries:
-                    label = (entry.label or "").lower()
-                    if "cpu" in label or "package" in label or "core" in label:
-                        if entry.current is not None:
-                            candidates.append(float(entry.current))
-                # 针对coretemp等无标签条目进行兜底
-                if name.lower() in ("coretemp", "cpu-thermal", "acpitz") and entries:
-                    for entry in entries:
-                        if entry.current is not None:
-                            candidates.append(float(entry.current))
+            for name, entries in (temps or {}).items():
+                lower_name = (name or '').lower()
+                for entry in entries or []:
+                    label = (getattr(entry, 'label', '') or '').lower()
+                    cur = getattr(entry, 'current', None)
+                    if cur is None:
+                        continue
+                    # 常见标签匹配
+                    if any(x in label for x in ("cpu", "package", "core")):
+                        candidates.append(float(cur))
+                # 针对无标签条目兜底：常见驱动名称
+                if lower_name in ("coretemp", "k10temp", "cpu-thermal", "acpitz", "soc_thermal"):
+                    for entry in entries or []:
+                        cur = getattr(entry, 'current', None)
+                        if cur is not None:
+                            candidates.append(float(cur))
             if candidates:
-                return max(candidates)
+                # 过滤异常值
+                candidates = [c for c in candidates if 0 < c < 110]
+                if candidates:
+                    return max(candidates)
         except Exception:
             pass
-        
-        # 打包环境下禁用WMI调用，避免可能的弹窗风险
-        if not hasattr(sys, '_MEIPASS'):  # 非打包环境才使用WMI
-            try:
-                import wmi
-                w = wmi.WMI(namespace="root\\OpenHardwareMonitor")
+
+        # 2) OpenHardwareMonitor/LibreHardwareMonitor WMI（仅在对应进程运行时使用，以避免COM异常）
+        try:
+            import psutil as _ps
+            import wmi
+            proc_names = [(p.info.get('name', '') or '').lower() for p in _ps.process_iter(attrs=['name'])]
+            use_ohm = any('openhardwaremonitor' in nm for nm in proc_names)
+            use_lhm = any('librehardwaremonitor' in nm or 'libre hardware monitor' in nm for nm in proc_names)
+
+            def _read_wmi_sensors(ns):
+                w = wmi.WMI(namespace=ns)
                 sensors = w.Sensor()
-                cpu_temps = [s.Value for s in sensors if s.SensorType == "Temperature" and ("cpu" in s.Name.lower() or "package" in s.Name.lower())]
-                if cpu_temps:
-                    return max(cpu_temps)
-            except Exception:
-                pass
+                vals = []
+                for s in sensors:
+                    try:
+                        if getattr(s, 'SensorType', '') == "Temperature":
+                            name_l = (getattr(s, 'Name', '') or '').lower()
+                            hw_l = (getattr(s, 'HardwareType', '') or '').lower()
+                            if ("cpu" in name_l) or ("package" in name_l) or ("cpu" in hw_l):
+                                v = float(getattr(s, 'Value', 0))
+                                if 0 < v < 110:
+                                    vals.append(v)
+                    except Exception:
+                        continue
+                return max(vals) if vals else None
+
+            if use_ohm:
+                v = _read_wmi_sensors("root\\OpenHardwareMonitor")
+                if isinstance(v, (int, float)):
+                    return float(v)
+            if use_lhm:
+                v = _read_wmi_sensors("root\\LibreHardwareMonitor")
+                if isinstance(v, (int, float)):
+                    return float(v)
+        except Exception:
+            pass
+
+        # 3) ACPI热区温度（非CPU专属，仅作兜底；单位0.1K，需要转换为摄氏）
+        # 增加节流：若近期失败（例如权限拒绝），在一段时间内跳过ACPI路径，避免频繁阻塞
+        acpi_block = False
+        try:
+            _now_mono = time.monotonic()
+            block_until = float(getattr(self, '_acpi_backoff_until', 0) or 0)
+            if _now_mono < block_until:
+                acpi_block = True
+        except Exception:
+            _now_mono = None
+            acpi_block = False
         
+        if not acpi_block:
+            try:
+                import wmi as _wmi
+                w2 = _wmi.WMI(namespace="root\\WMI")
+                zones = w2.MSAcpi_ThermalZoneTemperature()
+                readings = []
+                for z in zones or []:
+                    cur = getattr(z, 'CurrentTemperature', None)
+                    if cur:
+                        celsius = float(cur) / 10.0 - 273.15
+                        if 0 < celsius < 110:
+                            readings.append(celsius)
+                if readings:
+                    # 选择较高的一个，通常更接近CPU封装温度
+                    return max(readings)
+            except Exception:
+                # 出错则设置回退阻断时间，避免短期内重复查询
+                try:
+                    if _now_mono is not None:
+                        self._acpi_backoff_until = _now_mono + 300.0  # 5分钟
+                except Exception:
+                    pass
+        
+        # 3b) ACPI via PowerShell（无需Python wmi包）
+        if not acpi_block:
+            try:
+                import subprocess
+                cmd = [
+                    'powershell', '-NoProfile', '-ExecutionPolicy', 'Bypass',
+                    '-Command', '(Get-WmiObject -Namespace root\\WMI -Class MSAcpi_ThermalZoneTemperature | %{$_.CurrentTemperature})'
+                ]
+                output = subprocess.check_output(cmd, stderr=subprocess.DEVNULL)
+                lines = (output.decode(errors='ignore') or '').splitlines()
+                readings = []
+                for ln in lines:
+                    ln = ln.strip()
+                    if not ln:
+                        continue
+                    try:
+                        raw = float(ln)
+                        celsius = raw / 10.0 - 273.15
+                        if 0 < celsius < 110:
+                            readings.append(celsius)
+                    except Exception:
+                        continue
+                if readings:
+                    return max(readings)
+            except Exception:
+                # 出错则设置回退阻断时间，避免短期内重复查询
+                try:
+                    if _now_mono is not None:
+                        self._acpi_backoff_until = _now_mono + 300.0  # 5分钟
+                except Exception:
+                    pass
+
+        # 4) 返回上次有效读数（避免短时None导致UI抖动）
+        try:
+            if isinstance(getattr(self, 'cpu_temp', None), (int, float)) and 0 < self.cpu_temp < 110:
+                return float(self.cpu_temp)
+        except Exception:
+            pass
+
+        # 5) 最终兜底：根据CPU使用率估算温度，避免显示为"--"
+        try:
+            usage = getattr(self, '_cached_cpu_usage', None)
+            if isinstance(usage, (int, float)):
+                est = 40.0 + float(usage) * 0.35
+                return max(28.0, min(95.0, est))
+        except Exception:
+            pass
+
         return None
     
     def _get_gpu_temperature_celsius(self):
-        # 打包环境下使用安全的温度获取方法，避免弹窗
-        if hasattr(sys, '_MEIPASS') or GPUUTIL_DISABLE:  # 打包环境或禁用GPUtil
-            # 方法1：尝试通过OpenHardwareMonitor的WMI接口（Windows环境最可靠）
-            try:
-                import wmi
-                w = wmi.WMI(namespace="root\\OpenHardwareMonitor")
-                sensors = w.Sensor()
-                gpu_temps = [s.Value for s in sensors if s.SensorType == "Temperature" and ("gpu" in s.Name.lower())]
-                if gpu_temps:
-                    return max(gpu_temps)
-            except Exception:
-                pass
-            
-            # 方法2：尝试通过pynvml获取（如果可用且安全）
-            try:
-                import pynvml
-                pynvml.nvmlInit()
-                handle = pynvml.nvmlDeviceGetHandleByIndex(0)
-                temp = pynvml.nvmlDeviceGetTemperature(handle, pynvml.NVML_TEMPERATURE_GPU)
-                pynvml.nvmlShutdown()
-                if isinstance(temp, (int, float)) and temp > 0:
-                    return float(temp)
-            except Exception:
-                pass
-            
-            # 方法3：基于CPU温度估算GPU温度（兜底方案）
+        # 优先使用安全模式：打包环境默认启用，避免调用可能引发崩溃的原生接口
+        if hasattr(sys, '_MEIPASS') or GPUUTIL_DISABLE:
             try:
                 cpu_temp = self._get_cpu_temperature_celsius()
                 if isinstance(cpu_temp, (int, float)) and cpu_temp > 0:
-                    # GPU温度通常比CPU高5-15度
-                    return min(cpu_temp + 10, 95)  # 限制在合理范围内
+                    return min(float(cpu_temp) + 8.0, 95.0)
             except Exception:
                 pass
-            
-            # 方法4：提供合理的默认温度值（确保温度显示正常）
-            # 在Windows环境下，如果以上方法都失败，返回一个合理的默认值
-            return 45.0  # 默认GPU温度值
+            return 45.0  # 安全默认值，避免温度显示异常时导致后续逻辑崩溃
         
-        # 非打包环境：使用原有的温度获取方法
-        # 优先尝试GPUtil（已节流），若不可用则尝试OpenHardwareMonitor或pynvml
+        # 非安全模式：逐步尝试GPUtil、OpenHardwareMonitor(WMI)、NVML
         try:
             gpus = GPUtil.getGPUs()
             if gpus:
@@ -545,17 +813,20 @@ class SystemInfoWorker(QThread):
                     return float(temp_val)
         except Exception:
             pass
-        # OpenHardwareMonitor WMI（需OHM运行）
+        
+        # 仅在检测到OpenHardwareMonitor进程运行时才尝试其WMI接口，避免无进程情况下的COM异常
         try:
-            import wmi
-            w = wmi.WMI(namespace="root\\OpenHardwareMonitor")
-            sensors = w.Sensor()
-            gpu_temps = [s.Value for s in sensors if s.SensorType == "Temperature" and ("gpu" in s.Name.lower())]
-            if gpu_temps:
-                return max(gpu_temps)
+            import wmi, psutil
+            if any('openhardwaremonitor' in (p.info.get('name', '') or '').lower() for p in psutil.process_iter(attrs=['name'])):
+                w = wmi.WMI(namespace="root\\OpenHardwareMonitor")
+                sensors = w.Sensor()
+                gpu_temps = [s.Value for s in sensors if s.SensorType == "Temperature" and ("gpu" in s.Name.lower())]
+                if gpu_temps:
+                    return max(gpu_temps)
         except Exception:
             pass
-        # NVIDIA NVML（若安装了驱动并可用）
+        
+        # NVIDIA NVML（驱动正常且库可用时）
         try:
             import pynvml
             pynvml.nvmlInit()
@@ -578,7 +849,7 @@ class SystemInfoWorker(QThread):
                 logger.info("检测到打包环境，启用安全模式监控（保留游戏/FPS检测）")
             
             # 预计算变量和一次性初始化
-            current_time = time.time()
+            current_time = time.monotonic()
             last_gpu_check_time = current_time
             last_game_check_time = current_time
             last_network_check_time = current_time
@@ -595,6 +866,9 @@ class SystemInfoWorker(QThread):
             self._cached_down_speed = 0
             self._cached_up_speed = 0
             self._cached_fps = 0
+            # 新增：CPU温度缓存与节流时间戳，避免UI线程执行重操作
+            self._cached_cpu_temp = None
+            self._last_cpu_temp_read_ts = 0
             
             # 初始化网络IO计数器
             try:
@@ -614,7 +888,7 @@ class SystemInfoWorker(QThread):
             signal_interval = getattr(self, 'signal_interval', 0.1)
             
             while self._running:
-                current_time = time.time()
+                current_time = time.monotonic()
                 
                 # 非阻塞方式获取CPU使用率（高频但低消耗）
                 try:
@@ -623,9 +897,20 @@ class SystemInfoWorker(QThread):
                 except Exception:
                     # 保持缓存值
                     pass
+
+                # 新增：CPU温度节流更新（每1秒），在工作线程执行重操作
+                try:
+                    if current_time - float(getattr(self, '_last_cpu_temp_read_ts', 0) or 0) >= 1.0:
+                        v = self._get_cpu_temperature_celsius()
+                        if isinstance(v, (int, float)) and 0 < v < 110:
+                            self._cached_cpu_temp = float(v)
+                        self._last_cpu_temp_read_ts = current_time
+                except Exception:
+                    # 出错时保留上次有效值
+                    pass
                 
-                # 减少GPU查询频率，每0.6秒查询一次（与GPUtil节流协同）
-                if current_time - last_gpu_check_time >= 0.6:
+                # 自适应GPU查询频率：游戏时0.6秒，非游戏时1.2秒（与GPUtil节流协同）
+                if current_time - last_gpu_check_time >= (0.6 if self._cached_is_gaming else 1.2):
                     try:
                         # 打包环境下使用安全的温度获取方法
                         if is_packaged or GPUUTIL_DISABLE:
@@ -673,8 +958,8 @@ class SystemInfoWorker(QThread):
                         logger.error(f"GPU信息获取异常: {str(e)}")
                     last_gpu_check_time = current_time
                 
-                # 减少网络速度计算频率，每0.5秒计算一次
-                if current_time - last_network_check_time >= 0.5 and self.last_net_io is not None:
+                # 自适应网络速度计算频率：游戏时0.5秒，非游戏时1.0秒
+                if current_time - last_network_check_time >= (0.5 if self._cached_is_gaming else 1.0) and self.last_net_io is not None:
                     try:
                         current_net_io = psutil.net_io_counters()
                         time_diff = current_time - self.last_time
@@ -698,8 +983,8 @@ class SystemInfoWorker(QThread):
                         pass  # 使用缓存值
                     last_network_check_time = current_time
                 
-                # 减少游戏检测频率，每1秒检测一次
-                if current_time - last_game_check_time >= 1:
+                # 自适应游戏检测频率：游戏时1秒，非游戏时2秒
+                if current_time - last_game_check_time >= (1.0 if self._cached_is_gaming else 2.0):
                     try:
                         # 打包环境下也启用游戏检测，失败时使用缓存
                         self._cached_is_gaming = self.detect_gaming()
@@ -725,8 +1010,8 @@ class SystemInfoWorker(QThread):
                         logger.error(f"FPS获取异常: {str(e)}")
                     last_fps_check_time = current_time
                 
-                # 控制信号发送频率，避免过于频繁的UI更新
-                if current_time - last_signal_time >= signal_interval:
+                # 控制信号发送频率，避免过于频繁的UI更新（非游戏时减少到一半频率）
+                if current_time - last_signal_time >= (signal_interval if self._cached_is_gaming else signal_interval * 2):
                     # 发送更新信号，使用缓存值
                     self.update_signal.emit(
                         self._cached_cpu_usage, 
@@ -1322,13 +1607,20 @@ class SystemInfoWorker(QThread):
                 self._last_source_rtss = False
                 if not method_success:
                     # 回退到通用聚合方法，优先尝试RTSS共享内存（若有）
-                    fps_methods = [
-                        self._get_fps_using_rtss_shared_memory,
-                        self._get_fps_using_windows_gaming_api,
-                        self._get_fps_using_gpu_performance_counters,
-                        self._get_fps_using_direct_query,
-                        self._get_fps_using_gpu_load_temp_and_memory,
-                    ]
+                    if SAFE_PACKAGED_MODE:
+                        # 打包安全模式：优先RTSS，其次采用估算，跳过原生计数器
+                        fps_methods = [
+                            self._get_fps_using_rtss_shared_memory,
+                            self._get_fps_using_gpu_load_temp_and_memory,
+                        ]
+                    else:
+                        fps_methods = [
+                            self._get_fps_using_rtss_shared_memory,
+                            self._get_fps_using_windows_gaming_api,
+                            self._get_fps_using_gpu_performance_counters,
+                            self._get_fps_using_direct_query,
+                            self._get_fps_using_gpu_load_temp_and_memory,
+                        ]
                     method_weights = {
                         self._get_fps_using_rtss_shared_memory: 1.0,
                         self._get_fps_using_windows_gaming_api: 1.0,
@@ -1412,20 +1704,25 @@ class SystemInfoWorker(QThread):
                 # 优先使用更可靠的计数器方法，并综合多个来源
                 fps_methods = []
                 
-                # RTSS共享内存（若安装RTSS/Afterburner，置信度最高）
-                fps_methods.append(self._get_fps_using_rtss_shared_memory)
-                
-                # Windows 游戏/图形计数器（高置信）
-                fps_methods.append(self._get_fps_using_windows_gaming_api)
-                
-                # GPU厂商性能计数器（中高置信）
-                fps_methods.append(self._get_fps_using_gpu_performance_counters)
-                
-                # 直接查询（中等置信）
-                fps_methods.append(self._get_fps_using_direct_query)
-                
-                # GPU负载/温度/显存估算（低置信）
-                fps_methods.append(self._get_fps_using_gpu_load_temp_and_memory)
+                if SAFE_PACKAGED_MODE:
+                    # 打包安全模式：只使用RTSS与估算，跳过原生计数器
+                    fps_methods.append(self._get_fps_using_rtss_shared_memory)
+                    fps_methods.append(self._get_fps_using_gpu_load_temp_and_memory)
+                else:
+                    # RTSS共享内存（若安装RTSS/Afterburner，置信度最高）
+                    fps_methods.append(self._get_fps_using_rtss_shared_memory)
+                    
+                    # Windows 游戏/图形计数器（高置信）
+                    fps_methods.append(self._get_fps_using_windows_gaming_api)
+                    
+                    # GPU厂商性能计数器（中高置信）
+                    fps_methods.append(self._get_fps_using_gpu_performance_counters)
+                    
+                    # 直接查询（中等置信）
+                    fps_methods.append(self._get_fps_using_direct_query)
+                    
+                    # GPU负载/温度/显存估算（低置信）
+                    fps_methods.append(self._get_fps_using_gpu_load_temp_and_memory)
                 
                 # 方法置信权重
                 method_weights = {
@@ -1834,6 +2131,9 @@ class SystemInfoWorker(QThread):
     def _get_fps_using_windows_gaming_api(self):
         """增强的Windows游戏API FPS获取方法（按前台进程过滤实例）"""
         try:
+            # 打包安全模式下跳过win32pdh等原生计数器，避免潜在崩溃
+            if SAFE_PACKAGED_MODE:
+                raise Exception("packaged mode skips win32pdh to avoid instability")
             # 检查是否有win32pdh支持
             try:
                 import win32pdh
@@ -2035,6 +2335,9 @@ class SystemInfoWorker(QThread):
     def _get_fps_using_direct_query(self):
         """使用直接查询技术获取FPS"""
         try:
+            # 打包安全模式下跳过DXGI/ctypes直接查询，避免潜在崩溃
+            if SAFE_PACKAGED_MODE:
+                raise Exception("packaged mode skips direct DXGI query")
             # 导入ctypes用于调用Windows API
             import ctypes
             import ctypes.wintypes
@@ -2378,12 +2681,27 @@ class FloatingBall(QWidget):
             "strict_non_game_fullscreen": True,
             "debug_log": False,
             "enable_ingame_hud": True,
+            # 颜色设置（可自定义）
+            "fps_color_high": "#00FF00",  # 高FPS颜色（默认绿色）
+            "fps_color_mid": "#00BFFF",   # 中FPS颜色（默认天青蓝）
+            "fps_color_low": "#FF0000",   # 低FPS颜色（默认红色）
+            "fps_text_color": "#FFFFFF",  # 悬浮球中心文本颜色（默认白色）
+            "hud_text_color": "#FFD700",  # HUD信息文字颜色（默认金色）
+            "hud_style": 1,               # HUD样式：1=经典，2=科技
+            "hud_glass_bg_alpha": 135,    # 样式2玻璃背景透明度
+            "info_accent_color": "#00BFFF", # 信息箭头/强调颜色（默认天青蓝）
+            # HUD位置设置
+            "hud_anchor": "top_left",     # 默认左上角，可选：top_left/top_right/bottom_left/bottom_right
+            "hud_margin": 2,              # 与窗口边缘的像素间距
+            # HUD前台跟随
+            "hud_follow_foreground": True,      # 是否自动跟随当前前台窗口（默认开启）
+            "hud_follow_interval_ms": 800       # 跟随定位的刷新间隔（毫秒）
         }
         self.load_config()
 
         # 创建透明置顶的游戏HUD窗口
         try:
-            self.overlay_hud = GameOverlayHUD()
+            self.overlay_hud = GameOverlayHUD(settings=self.settings)
         except Exception:
             self.overlay_hud = None
         
@@ -2423,13 +2741,30 @@ class FloatingBall(QWidget):
     def load_background_image(self):
         self.bg_image = None
         try:
-            image_path = get_resource_path("Resources/xiaohaoxuanfuchuang.png")
-            if os.path.exists(image_path):
-                self.bg_image = QImage(image_path)
+            # 尝试多种可能的资源路径
+            image_names = ["xiaohaoxuanfuchuang.png", "图标.png", "图标2.png"]
+            found_path = None
+            
+            for name in image_names:
+                image_path = get_resource_path(os.path.join("Resources", name))
+                if os.path.exists(image_path):
+                    found_path = image_path
+                    break
+                # 也尝试直接在当前目录查找
+                image_path = get_resource_path(name)
+                if os.path.exists(image_path):
+                    found_path = image_path
+                    break
+            
+            if found_path:
+                logger.info(f"找到背景图片: {found_path}")
+                self.bg_image = QImage(found_path)
                 if not self.bg_image.isNull():
                     self.bg_image = self.bg_image.scaled(self.window_width, self.window_height)
+            else:
+                logger.warning("未找到背景图片，将使用默认绘制")
         except Exception as e:
-            print(f"加载背景图片失败: {e}")
+            logger.error(f"加载背景图片失败: {e}")
             self.bg_image = None
     
     def start_system_info_thread(self):
@@ -2459,17 +2794,20 @@ class FloatingBall(QWidget):
         self.gpu_load = gpu_load
         self.down_speed = down_speed
         self.up_speed = up_speed
-
-        # 更新CPU温度（1秒节流，避免过于频繁）
+        
+        # 添加内存使用率监控
         try:
-            now_ts = time.time()
-            if not hasattr(self, 'cpu_temp'):
-                self.cpu_temp = None
-            if not hasattr(self, '_last_cpu_temp_read_ts'):
-                self._last_cpu_temp_read_ts = 0
-            if now_ts - float(self._last_cpu_temp_read_ts or 0) >= 1.0:
-                self.cpu_temp = self._get_cpu_temperature_celsius()
-                self._last_cpu_temp_read_ts = now_ts
+            import psutil
+            self.mem_usage = psutil.virtual_memory().percent
+        except Exception:
+            self.mem_usage = 0
+
+        # 调整：从worker缓存读取CPU温度，避免在UI线程调用重操作
+        try:
+            if hasattr(self, 'worker') and self.worker is not None:
+                v = getattr(self.worker, '_cached_cpu_temp', None)
+                if isinstance(v, (int, float)) and 0 < v < 110:
+                    self.cpu_temp = float(v)
         except Exception:
             pass
         
@@ -2490,7 +2828,7 @@ class FloatingBall(QWidget):
             if hasattr(self, 'overlay_hud') and self.overlay_hud is not None:
                 try:
                     self.overlay_hud.show()
-                    self.overlay_hud.update_metrics(self.cpu_usage, self.cpu_temp, self.gpu_load, self.gpu_temp, self.fps)
+                    self.overlay_hud.update_metrics(self.cpu_usage, self.cpu_temp, self.gpu_load, self.gpu_temp, self.fps, self.mem_usage)
                 except Exception:
                     pass
         else:
@@ -2568,15 +2906,16 @@ class FloatingBall(QWidget):
             # FPS显示模式
             # 根据FPS值设置不同的颜色
             fps_ratio = min(self.fps / 144, 1.0)  # 归一化FPS值（假设最高144fps）
+            # 基于用户设置的FPS颜色（高/中/低）
+            high_hex = self.settings.get("fps_color_high", "#00FF00")
+            mid_hex = self.settings.get("fps_color_mid", "#00BFFF")
+            low_hex = self.settings.get("fps_color_low", "#FF0000")
             if fps_ratio > 0.8:
-                # 高FPS - 绿色
-                fps_color = QColor(0, 255, 0, 200)
+                fps_color = _color_with_alpha_hex(high_hex, 200)
             elif fps_ratio > 0.5:
-                # 中等FPS - 蓝色
-                fps_color = QColor(0, 191, 255, 200)
+                fps_color = _color_with_alpha_hex(mid_hex, 200)
             else:
-                # 低FPS - 红色
-                fps_color = QColor(255, 0, 0, 200)
+                fps_color = _color_with_alpha_hex(low_hex, 200)
             
             # 绘制发光效果
             # 创建发光效果的渐变
@@ -2665,7 +3004,8 @@ class FloatingBall(QWidget):
             painter.drawEllipse(QPoint(highlight_x, highlight_y), 3, 3)
             
         # 绘制文本（进度、FPS或温度）
-        painter.setPen(QPen(QColor(255, 255, 255)))
+        fps_text_hex = str(self.settings.get("fps_text_color", "#FFFFFF"))
+        painter.setPen(QPen(QColor(fps_text_hex)))
         
         if should_show_fps:
             # FPS显示模式 - 根据数字位数自动调整字体大小
@@ -2717,7 +3057,9 @@ class FloatingBall(QWidget):
         # 如果没有独立HUD窗口，才在悬浮球里临时显示
         show_in_ball = hud_enabled and self.is_gaming and not (hasattr(self, 'overlay_hud') and self.overlay_hud is not None)
         if show_in_ball:
-            painter.setPen(QPen(QColor(255, 215, 0)))
+            # 使用可配置的信息文字颜色（默认金色）
+            hud_hex = str(self.settings.get("hud_text_color", "#FFD700"))
+            painter.setPen(QPen(QColor(hud_hex)))
             painter.setFont(QFont("Arial", 13, QFont.Bold))
             top_y = 8
             line_h = 18
@@ -3179,6 +3521,90 @@ class FloatingBall(QWidget):
         hud_action.setChecked(bool(self.settings.get("enable_ingame_hud", True)))
         hud_action.triggered.connect(lambda checked: (self.settings.update({"enable_ingame_hud": bool(checked)}), self.save_config(), self.apply_config()))
         menu.addAction(hud_action)
+
+        # HUD样式切换
+        try:
+            current_style = int(self.settings.get("hud_style", 2))
+        except Exception:
+            current_style = 2
+        hud_style_menu = QMenu("HUD样式", self)
+        style1_action = QAction("样式1（经典）", self)
+        style2_action = QAction("样式2（科技）", self)
+        style3_action = QAction("样式3（中国风）", self)
+        style4_action = QAction("样式4（赛博霓虹）", self)
+        style1_action.setCheckable(True)
+        style2_action.setCheckable(True)
+        style3_action.setCheckable(True)
+        style4_action.setCheckable(True)
+        style1_action.setChecked(current_style == 1)
+        style2_action.setChecked(current_style == 2)
+        style3_action.setChecked(current_style == 3)
+        style4_action.setChecked(current_style == 4)
+        style1_action.triggered.connect(lambda checked: (self.settings.update({"hud_style": 1}), self.save_config(), self.apply_config(), self.overlay_hud and self.overlay_hud.update()))
+        style2_action.triggered.connect(lambda checked: (self.settings.update({"hud_style": 2}), self.save_config(), self.apply_config(), self.overlay_hud and self.overlay_hud.update()))
+        style3_action.triggered.connect(lambda checked: (self.settings.update({"hud_style": 3}), self.save_config(), self.apply_config(), self.overlay_hud and self.overlay_hud.update()))
+        style4_action.triggered.connect(lambda checked: (self.settings.update({"hud_style": 4}), self.save_config(), self.apply_config(), self.overlay_hud and self.overlay_hud.update()))
+        hud_style_menu.addAction(style1_action)
+        hud_style_menu.addAction(style2_action)
+        hud_style_menu.addAction(style3_action)
+        hud_style_menu.addAction(style4_action)
+        menu.addMenu(hud_style_menu)
+
+        # HUD位置设置
+        try:
+            current_anchor = str(self.settings.get("hud_anchor", "top_left"))
+            current_margin = int(self.settings.get("hud_margin", 2))
+        except Exception:
+            current_anchor = "top_left"
+            current_margin = 2
+        hud_pos_menu = QMenu("HUD位置", self)
+        anchor_map = {
+            "左上角": "top_left",
+            "右上角": "top_right",
+            "左下角": "bottom_left",
+            "右下角": "bottom_right",
+        }
+        for label, key in anchor_map.items():
+            act = QAction(label, self)
+            act.setCheckable(True)
+            act.setChecked(current_anchor == key)
+            act.triggered.connect(lambda checked, k=key: (self.settings.update({"hud_anchor": k}), self.save_config(), self.apply_config(), self.overlay_hud and self.overlay_hud.reposition_to_foreground()))
+            hud_pos_menu.addAction(act)
+        def set_margin():
+            try:
+                val, ok = QInputDialog.getInt(self, "设置HUD边距", "与窗口边缘的像素间距", current_margin, 0, 50, 1)
+                if ok:
+                    self.settings["hud_margin"] = int(max(0, min(50, val)))
+                    self.save_config()
+                    self.apply_config()
+                    if self.overlay_hud:
+                        self.overlay_hud.reposition_to_foreground()
+            except Exception:
+                pass
+        margin_action = QAction("设置边距...", self)
+        margin_action.triggered.connect(set_margin)
+        hud_pos_menu.addAction(margin_action)
+        # 跟随前台窗口
+        follow_action = QAction("自动跟随前台窗口", self)
+        follow_action.setCheckable(True)
+        follow_action.setChecked(bool(self.settings.get("hud_follow_foreground", True)))
+        follow_action.triggered.connect(lambda checked: (self.settings.update({"hud_follow_foreground": bool(checked)}), self.save_config(), self.apply_config()))
+        hud_pos_menu.addAction(follow_action)
+        # 重置为默认位置
+        reset_action = QAction("重置为默认位置", self)
+        def _reset_hud_pos():
+            try:
+                self.settings["hud_anchor"] = "top_left"
+                self.settings["hud_margin"] = 2
+                self.save_config()
+                self.apply_config()
+                if self.overlay_hud:
+                    self.overlay_hud.reposition_to_foreground()
+            except Exception:
+                pass
+        reset_action.triggered.connect(_reset_hud_pos)
+        hud_pos_menu.addAction(reset_action)
+        menu.addMenu(hud_pos_menu)
         
         # 位置锁定
         lock_action = QAction("位置锁定", self)
@@ -3202,6 +3628,31 @@ class FloatingBall(QWidget):
         opacity_action = QAction("透明度...", self)
         opacity_action.triggered.connect(set_opacity)
         menu.addAction(opacity_action)
+        
+        # 颜色设置对话框入口
+        def open_color_settings():
+            try:
+                initial = {
+                    "hud_text_color": str(self.settings.get("hud_text_color", "#FFD700")).upper(),
+                    "fps_text_color": str(self.settings.get("fps_text_color", "#FFFFFF")).upper(),
+                    "fps_color_high": str(self.settings.get("fps_color_high", "#00FF00")).upper(),
+                    "fps_color_mid": str(self.settings.get("fps_color_mid", "#00BFFF")).upper(),
+                    "fps_color_low": str(self.settings.get("fps_color_low", "#FF0000")).upper(),
+                }
+                dlg = ColorSettingsDialog(self, initial_settings=initial)
+                if dlg.exec_() == QDialog.Accepted:
+                    values = dlg.get_values() or {}
+                    self.settings.update(values)
+                    self.save_config()
+                    self.apply_config()
+                    self.update()
+                    if hasattr(self, 'overlay_hud') and self.overlay_hud is not None:
+                        self.overlay_hud.update()
+            except Exception as e:
+                logger.error(f"打开颜色设置失败: {e}")
+        color_action = QAction("颜色设置...", self)
+        color_action.triggered.connect(open_color_settings)
+        menu.addAction(color_action)
         
         # 编辑自定义非游戏进程
         def edit_processes():
@@ -3391,6 +3842,92 @@ class FloatingBall(QWidget):
         hud_action.setChecked(bool(self.settings.get("enable_ingame_hud", True)))
         hud_action.triggered.connect(lambda checked: (self.settings.update({"enable_ingame_hud": bool(checked)}), self.save_config(), self.apply_config()))
         self.tray_menu.addAction(hud_action)
+
+        # HUD样式切换
+        try:
+            current_style = int(self.settings.get("hud_style", 2))
+        except Exception:
+            current_style = 2
+        hud_style_menu = QMenu("HUD样式", self)
+        style1_action = QAction("样式1（经典）", self)
+        style2_action = QAction("样式2（科技）", self)
+        style3_action = QAction("样式3（中国风）", self)
+        style4_action = QAction("样式4（赛博霓虹）", self)
+        style1_action.setCheckable(True)
+        style2_action.setCheckable(True)
+        style3_action.setCheckable(True)
+        style4_action.setCheckable(True)
+        style1_action.setChecked(current_style == 1)
+        style2_action.setChecked(current_style == 2)
+        style3_action.setChecked(current_style == 3)
+        style4_action.setChecked(current_style == 4)
+        style1_action.triggered.connect(lambda checked: (self.settings.update({"hud_style": 1}), self.save_config(), self.apply_config(), self.overlay_hud and self.overlay_hud.update(), self.update_tray_icon()))
+        style2_action.triggered.connect(lambda checked: (self.settings.update({"hud_style": 2}), self.save_config(), self.apply_config(), self.overlay_hud and self.overlay_hud.update(), self.update_tray_icon()))
+        style3_action.triggered.connect(lambda checked: (self.settings.update({"hud_style": 3}), self.save_config(), self.apply_config(), self.overlay_hud and self.overlay_hud.update(), self.update_tray_icon()))
+        style4_action.triggered.connect(lambda checked: (self.settings.update({"hud_style": 4}), self.save_config(), self.apply_config(), self.overlay_hud and self.overlay_hud.update(), self.update_tray_icon()))
+        hud_style_menu.addAction(style1_action)
+        hud_style_menu.addAction(style2_action)
+        hud_style_menu.addAction(style3_action)
+        hud_style_menu.addAction(style4_action)
+        self.tray_menu.addMenu(hud_style_menu)
+
+        # HUD位置设置
+        try:
+            current_anchor = str(self.settings.get("hud_anchor", "top_left"))
+            current_margin = int(self.settings.get("hud_margin", 2))
+        except Exception:
+            current_anchor = "top_left"
+            current_margin = 2
+        hud_pos_menu = QMenu("HUD位置", self)
+        anchor_map = {
+            "左上角": "top_left",
+            "右上角": "top_right",
+            "左下角": "bottom_left",
+            "右下角": "bottom_right",
+        }
+        for label, key in anchor_map.items():
+            act = QAction(label, self)
+            act.setCheckable(True)
+            act.setChecked(current_anchor == key)
+            act.triggered.connect(lambda checked, k=key: (self.settings.update({"hud_anchor": k}), self.save_config(), self.apply_config(), self.overlay_hud and self.overlay_hud.reposition_to_foreground(), self.update_tray_icon()))
+            hud_pos_menu.addAction(act)
+        def set_margin_tray():
+            try:
+                val, ok = QInputDialog.getInt(self, "设置HUD边距", "与窗口边缘的像素间距", current_margin, 0, 50, 1)
+                if ok:
+                    self.settings["hud_margin"] = int(max(0, min(50, val)))
+                    self.save_config()
+                    self.apply_config()
+                    if self.overlay_hud:
+                        self.overlay_hud.reposition_to_foreground()
+                    self.update_tray_icon()
+            except Exception:
+                pass
+        margin_action_tray = QAction("设置边距...", self)
+        margin_action_tray.triggered.connect(set_margin_tray)
+        hud_pos_menu.addAction(margin_action_tray)
+        # 跟随前台窗口
+        follow_action_tray = QAction("自动跟随前台窗口", self)
+        follow_action_tray.setCheckable(True)
+        follow_action_tray.setChecked(bool(self.settings.get("hud_follow_foreground", True)))
+        follow_action_tray.triggered.connect(lambda checked: (self.settings.update({"hud_follow_foreground": bool(checked)}), self.save_config(), self.apply_config()))
+        hud_pos_menu.addAction(follow_action_tray)
+        # 重置为默认位置
+        reset_action_tray = QAction("重置为默认位置", self)
+        def _reset_hud_pos_tray():
+            try:
+                self.settings["hud_anchor"] = "top_left"
+                self.settings["hud_margin"] = 2
+                self.save_config()
+                self.apply_config()
+                if self.overlay_hud:
+                    self.overlay_hud.reposition_to_foreground()
+                self.update_tray_icon()
+            except Exception:
+                pass
+        reset_action_tray.triggered.connect(_reset_hud_pos_tray)
+        hud_pos_menu.addAction(reset_action_tray)
+        self.tray_menu.addMenu(hud_pos_menu)
         
         # 位置锁定
         lock_action = QAction("位置锁定", self)
@@ -3413,6 +3950,32 @@ class FloatingBall(QWidget):
         opacity_action = QAction("透明度...", self)
         opacity_action.triggered.connect(set_opacity_tray)
         self.tray_menu.addAction(opacity_action)
+        
+        # 颜色设置对话框入口
+        def open_color_settings_tray():
+            try:
+                initial = {
+                    "hud_text_color": str(self.settings.get("hud_text_color", "#FFD700")).upper(),
+                    "fps_text_color": str(self.settings.get("fps_text_color", "#FFFFFF")).upper(),
+                    "fps_color_high": str(self.settings.get("fps_color_high", "#00FF00")).upper(),
+                    "fps_color_mid": str(self.settings.get("fps_color_mid", "#00BFFF")).upper(),
+                    "fps_color_low": str(self.settings.get("fps_color_low", "#FF0000")).upper(),
+                }
+                dlg = ColorSettingsDialog(self, initial_settings=initial)
+                if dlg.exec_() == QDialog.Accepted:
+                    values = dlg.get_values() or {}
+                    self.settings.update(values)
+                    self.save_config()
+                    self.apply_config()
+                    self.update()
+                    if hasattr(self, 'overlay_hud') and self.overlay_hud is not None:
+                        self.overlay_hud.update()
+                    self.update_tray_icon()
+            except Exception as e:
+                print(f"打开颜色设置失败: {e}")
+        color_action = QAction("颜色设置...", self)
+        color_action.triggered.connect(open_color_settings_tray)
+        self.tray_menu.addAction(color_action)
         
         # 编辑自定义非游戏进程
         def edit_processes_tray():
@@ -3538,6 +4101,15 @@ class FloatingBall(QWidget):
             CUSTOM_NON_GAME_PROCESSES = set(self.settings.get("custom_non_game_processes", []))
             CUSTOM_NON_GAME_TITLE_KEYWORDS = set(self.settings.get("custom_non_game_titles", []))
             
+            # 更新HUD跟随配置
+            if hasattr(self, 'overlay_hud') and self.overlay_hud is not None:
+                try:
+                    self.overlay_hud.apply_hud_config()
+                    # 背景应用样式变化后也重新定位一次
+                    self.overlay_hud.reposition_to_foreground()
+                except Exception:
+                    pass
+            
             # 刷新托盘图标状态
             self.update_tray_icon()
         except Exception as e:
@@ -3605,15 +4177,17 @@ class FloatingBall(QWidget):
         should_show_fps = show_fps_enabled and self.fps > 0 and (not fps_only_in_game or self.is_gaming)
         if should_show_fps:
             # FPS显示模式
-            # 根据FPS值设置不同的颜色
+            # 根据用户设置的颜色选择不同的颜色
             fps_ratio = min(self.fps / 144, 1.0)
+            high_hex = self.settings.get("fps_color_high", "#00FF00")
+            mid_hex = self.settings.get("fps_color_mid", "#00BFFF")
+            low_hex = self.settings.get("fps_color_low", "#FF0000")
             if fps_ratio > 0.8:
-                fps_color = QColor(0, 255, 0, 200)
+                fps_color = _color_with_alpha_hex(high_hex, 200)
             elif fps_ratio > 0.5:
-                fps_color = QColor(0, 191, 255, 200)
+                fps_color = _color_with_alpha_hex(mid_hex, 200)
             else:
-                fps_color = QColor(255, 0, 0, 200)
-            
+                fps_color = _color_with_alpha_hex(low_hex, 200)
             painter.setPen(QPen(fps_color))
             
             # 绘制FPS文本（只显示数字，避免太长）
@@ -3666,66 +4240,511 @@ class FloatingBall(QWidget):
                                     f"上传速度: {formatted_up_speed}")
         
 class GameOverlayHUD(QWidget):
-    def __init__(self):
+    def __init__(self, settings=None):
         super().__init__()
+        self.settings_ref = settings
         self.setWindowFlags(Qt.FramelessWindowHint | Qt.Tool | Qt.WindowStaysOnTopHint | Qt.BypassWindowManagerHint)
         self.setAttribute(Qt.WA_TranslucentBackground, True)
         self.setAttribute(Qt.WA_TransparentForMouseEvents, True)
-        self.setFixedSize(240, 70)
+        self.setFixedSize(280, 120)  # 增加高度以容纳内存信息
         self.cpu_usage = 0
         self.cpu_temp = None
         self.gpu_load = 0
         self.gpu_temp = 0
         self.fps = 0
+        self.mem_usage = 0  # 添加内存使用率监控
+        # HUD前台跟随定时器
+        try:
+            from PyQt5.QtCore import QTimer
+            self._reposition_timer = QTimer(self)
+            self._reposition_timer.timeout.connect(self.reposition_to_foreground)
+            self.apply_hud_config()
+        except Exception:
+            self._reposition_timer = None
 
-    def update_metrics(self, cpu_usage, cpu_temp, gpu_load, gpu_temp, fps):
+    def apply_hud_config(self):
+        try:
+            follow = bool(self.settings_ref.get("hud_follow_foreground", True)) if isinstance(self.settings_ref, dict) else True
+            interval = int(self.settings_ref.get("hud_follow_interval_ms", 800)) if isinstance(self.settings_ref, dict) else 800
+            if self._reposition_timer:
+                self._reposition_timer.setInterval(max(200, min(3000, interval)))
+                if follow:
+                    if not self._reposition_timer.isActive():
+                        self._reposition_timer.start()
+                else:
+                    self._reposition_timer.stop()
+        except Exception:
+            pass
+
+    def update_metrics(self, cpu_usage, cpu_temp, gpu_load, gpu_temp, fps, mem_usage=0):
         self.cpu_usage = cpu_usage
         self.cpu_temp = cpu_temp
         self.gpu_load = gpu_load
         self.gpu_temp = gpu_temp
         self.fps = fps
+        self.mem_usage = mem_usage  # 更新内存使用率
         self.reposition_to_foreground()
         self.update()
 
     def reposition_to_foreground(self):
         try:
             hwnd = ctypes.windll.user32.GetForegroundWindow()
+            owner_hwnd = getattr(self, 'owner_hwnd', None)
+            if owner_hwnd and hwnd == owner_hwnd:
+                return
+
+            # 优先使用DWM扩展边界，得到更接近客户端区域的窗口矩形（排除阴影等），失败则回退到GetWindowRect
             rect = wintypes.RECT()
-            ctypes.windll.user32.GetWindowRect(hwnd, ctypes.byref(rect))
-            x = int(rect.left + 12)
-            y = int(rect.top + 12)
-            self.move(x, y)
+            got_dwm_rect = False
+            try:
+                dwmapi = ctypes.windll.dwmapi
+                DWMWA_EXTENDED_FRAME_BOUNDS = 9
+                if hasattr(dwmapi, 'DwmGetWindowAttribute'):
+                    res = dwmapi.DwmGetWindowAttribute(hwnd, DWMWA_EXTENDED_FRAME_BOUNDS, ctypes.byref(rect), ctypes.sizeof(rect))
+                    got_dwm_rect = (res == 0)
+            except Exception:
+                got_dwm_rect = False
+            if not got_dwm_rect:
+                ctypes.windll.user32.GetWindowRect(hwnd, ctypes.byref(rect))
+
+            # 从配置读取锚点与边距（默认改为左上角）
+            anchor = 'top_left'
+            margin = 2
+            try:
+                if isinstance(self.settings_ref, dict):
+                    anchor = str(self.settings_ref.get('hud_anchor', anchor))
+                    margin = int(self.settings_ref.get('hud_margin', margin))
+            except Exception:
+                pass
+
+            w, h = self.width(), self.height()
+            # 如果前台窗口处于最小化状态，隐藏HUD并返回
+            try:
+                if ctypes.windll.user32.IsIconic(hwnd):
+                    self.hide()
+                    return
+            except Exception:
+                pass
+            # 高DPI支持：将物理像素转换为Qt的设备无关像素，避免缩放导致的贴合偏移
+            try:
+                dpi = ctypes.windll.user32.GetDpiForWindow(hwnd)
+                scale = float(dpi) / 96.0 if dpi else 1.0
+                if scale <= 0:
+                    scale = 1.0
+                left, top, right, bottom = rect.left/scale, rect.top/scale, rect.right/scale, rect.bottom/scale
+            except Exception:
+                left, top, right, bottom = int(rect.left), int(rect.top), int(rect.right), int(rect.bottom)
+            if anchor == 'top_left':
+                x = left + margin
+                y = top + margin
+            elif anchor == 'bottom_left':
+                x = left + margin
+                y = bottom - h - margin
+            elif anchor == 'bottom_right':
+                x = right - w - margin
+                y = bottom - h - margin
+            else:  # 默认 top_right
+                x = right - w - margin
+                y = top + margin
+
+            # 将HUD位置限制在当前显示器工作区内，避免越界（任务栏遮挡区域除外）
+            try:
+                MONITOR_DEFAULTTONEAREST = 2
+                hmonitor = ctypes.windll.user32.MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST)
+                class RECT(ctypes.Structure):
+                    _fields_ = [("left", ctypes.c_long), ("top", ctypes.c_long), ("right", ctypes.c_long), ("bottom", ctypes.c_long)]
+                class MONITORINFO(ctypes.Structure):
+                    _fields_ = [("cbSize", ctypes.c_ulong), ("rcMonitor", RECT), ("rcWork", RECT), ("dwFlags", ctypes.c_ulong)]
+                mi = MONITORINFO()
+                mi.cbSize = ctypes.sizeof(MONITORINFO)
+                if ctypes.windll.user32.GetMonitorInfoW(hmonitor, ctypes.byref(mi)):
+                    work = mi.rcWork
+                    try:
+                        dpi = ctypes.windll.user32.GetDpiForWindow(hwnd)
+                        scale = float(dpi) / 96.0 if dpi else 1.0
+                        if scale <= 0:
+                            scale = 1.0
+                    except Exception:
+                        scale = 1.0
+                    wl, wt, wr, wb = work.left/scale, work.top/scale, work.right/scale, work.bottom/scale
+                    x = max(wl, min(x, wr - w))
+                    y = max(wt, min(y, wb - h))
+            except Exception:
+                pass
+            self.move(int(x), int(y))
         except Exception:
             pass
 
     def paintEvent(self, event):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.Antialiasing)
-        painter.setPen(QPen(QColor(255, 215, 0)))
-        painter.setFont(QFont("Arial", 13, QFont.Bold))
-        top_y = 6
-        line_h = 18
+        painter.setRenderHint(QPainter.TextAntialiasing)
+        w, h = self.width(), self.height()
+
+        # 样式切换：1=经典文本；2=科技玻璃
+        try:
+            style = int(self.settings_ref.get("hud_style", 2)) if isinstance(self.settings_ref, dict) else 2
+        except Exception:
+            style = 2
+
+        if style == 1:
+            hud_hex = "#FFD700"
+            try:
+                if isinstance(self.settings_ref, dict):
+                    hud_hex = str(self.settings_ref.get("hud_text_color", hud_hex))
+            except Exception:
+                pass
+            painter.setPen(QPen(QColor(hud_hex), 1))
+            painter.setFont(QFont("Arial", 13, QFont.Bold))
+            left_pad = 8
+            top_y = 8
+            line_h = 20
+            fps_text = f"FPS {self.fps}" if self.fps > 0 else "FPS --"
+            cpu_temp_text = f"{int(self.cpu_temp)}°C" if isinstance(self.cpu_temp, (int, float)) else "--"
+            gpu_temp_text = f"{int(self.gpu_temp)}°C" if self.gpu_temp > 0 else "--"
+            cpu_text = f"CPU {self.cpu_usage:.0f}%  {cpu_temp_text}"
+            gpu_text = f"GPU {self.gpu_load:.0f}%  {gpu_temp_text}"
+            mem_text = f"内存 {self.mem_usage:.0f}%"  # 添加内存信息
+            painter.drawText(QRect(left_pad, top_y, w - 2*left_pad, line_h), Qt.AlignLeft, fps_text)
+            painter.drawText(QRect(left_pad, top_y + line_h, w - 2*left_pad, line_h), Qt.AlignLeft, cpu_text)
+            painter.drawText(QRect(left_pad, top_y + 2*line_h, w - 2*left_pad, line_h), Qt.AlignLeft, gpu_text)
+            painter.drawText(QRect(left_pad, top_y + 3*line_h, w - 2*left_pad, line_h), Qt.AlignLeft, mem_text)
+            painter.end()
+            return
+
+        # 样式3：中国风（宣纸+墨色边框+书法字体）
+        if style == 3:
+            # 更柔和的宣纸背景与沉稳文字色，左右对齐优化
+            hud_hex = "#2B2B2B"
+            bg_alpha = 150
+            try:
+                if isinstance(self.settings_ref, dict):
+                    hud_hex = str(self.settings_ref.get("hud_text_color", hud_hex))
+                    bg_alpha = int(self.settings_ref.get("hud_glass_bg_alpha", bg_alpha))
+            except Exception:
+                pass
+            text_main = QColor(hud_hex)
+            panel_rect = QRect(0, 0, w, h)
+            # 宣纸背景（更浅、更均匀）
+            grad_bg = QLinearGradient(0, 0, 0, h)
+            grad_bg.setColorAt(0.0, QColor(246, 241, 231, bg_alpha))
+            grad_bg.setColorAt(1.0, QColor(238, 232, 220, min(bg_alpha+8, 215)))
+            painter.setBrush(QBrush(grad_bg))
+            painter.setPen(Qt.NoPen)
+            painter.drawRoundedRect(panel_rect.adjusted(1, 1, -1, -1), 10, 10)
+            # 墨色细框（去掉角饰，简洁）
+            border_color = QColor(72, 54, 38, 200)
+            painter.setPen(QPen(border_color, 1.5, Qt.SolidLine, Qt.RoundCap))
+            painter.setBrush(Qt.NoBrush)
+            painter.drawRoundedRect(panel_rect.adjusted(1, 1, -1, -1), 10, 10)
+            # 文本与布局（中文标签、雅黑）
+            painter.setFont(QFont("Microsoft YaHei", 12, QFont.Medium))
+            painter.setPen(QPen(text_main, 1))
+            left_pad = 14
+            right_pad = 12
+            top_y = 10
+            line_h = 24
+            label_w = 68
+            # 文本数据
+            fps_val_text = f"{self.fps}" if self.fps > 0 else "--"
+            cpu_temp_text = f"{int(self.cpu_temp)}°C" if isinstance(self.cpu_temp, (int, float)) else "--"
+            gpu_temp_text = f"{int(self.gpu_temp)}°C" if self.gpu_temp > 0 else "--"
+            # 左标签 + 右数值
+            rect_line = QRect(left_pad, top_y, w - left_pad - right_pad, line_h)
+            painter.drawText(rect_line, Qt.AlignLeft, "帧率")
+            painter.drawText(rect_line, Qt.AlignRight, fps_val_text)
+            rect_cpu = QRect(left_pad, top_y + line_h, w - left_pad - right_pad, line_h)
+            painter.drawText(rect_cpu, Qt.AlignLeft, "处理器")
+            painter.drawText(rect_cpu, Qt.AlignRight, f"{self.cpu_usage:.0f}%  {cpu_temp_text}")
+            rect_gpu = QRect(left_pad, top_y + 2*line_h, w - left_pad - right_pad, line_h)
+            painter.drawText(rect_gpu, Qt.AlignLeft, "显卡")
+            painter.drawText(rect_gpu, Qt.AlignRight, f"{self.gpu_load:.0f}%  {gpu_temp_text}")
+            # 添加内存信息
+            rect_mem = QRect(left_pad, top_y + 3*line_h, w - left_pad - right_pad, line_h)
+            painter.drawText(rect_mem, Qt.AlignLeft, "内存")
+            painter.drawText(rect_mem, Qt.AlignRight, f"{self.mem_usage:.0f}%")
+            # 进度墨线：CPU朱红、GPU墨绿、内存紫色（置于标签右侧）
+            vermillion = QColor(176, 36, 36)    # 更雅的绛红
+            jade = QColor(38, 92, 68)           # 更清透的墨绿
+            purple = QColor(106, 78, 153)       # 沉稳紫色（内存用）
+            base_col = QColor(80, 65, 50, 70)   # 底线淡墨
+            bar_left = left_pad + label_w
+            bar_width = max(w - bar_left - right_pad, 30)
+            # 背景线
+            painter.setPen(QPen(base_col, 3, Qt.SolidLine, Qt.RoundCap))
+            painter.drawLine(bar_left, top_y + line_h - 3, bar_left + bar_width, top_y + line_h - 3)
+            painter.drawLine(bar_left, top_y + 2*line_h - 3, bar_left + bar_width, top_y + 2*line_h - 3)
+            painter.drawLine(bar_left, top_y + 3*line_h - 3, bar_left + bar_width, top_y + 3*line_h - 3)
+            # CPU朱红，GPU墨绿，内存紫色
+            painter.setPen(QPen(vermillion, 4, Qt.SolidLine, Qt.RoundCap))
+            cpu_len = int(bar_width * max(0.0, min(1.0, self.cpu_usage/100.0)))
+            painter.drawLine(bar_left, top_y + line_h - 3, bar_left + cpu_len, top_y + line_h - 3)
+            painter.setPen(QPen(jade, 4, Qt.SolidLine, Qt.RoundCap))
+            gpu_len = int(bar_width * max(0.0, min(1.0, self.gpu_load/100.0)))
+            painter.drawLine(bar_left, top_y + 2*line_h - 3, bar_left + gpu_len, top_y + 2*line_h - 3)
+            painter.setPen(QPen(purple, 4, Qt.SolidLine, Qt.RoundCap))
+            mem_len = int(bar_width * max(0.0, min(1.0, self.mem_usage/100.0)))
+            painter.drawLine(bar_left, top_y + 3*line_h - 3, bar_left + mem_len, top_y + 3*line_h - 3)
+            # 完成
+            painter.end()
+            return
+
+        # 样式4：赛博霓虹（深色毛玻璃 + 双色渐变边框）
+        if style == 4:
+            accent_a = QColor("#7CFF6B")  # 霓虹绿
+            accent_b = QColor("#00E5FF")  # 霓虹蓝
+            hud_hex = "#D6FFF2"
+            bg_alpha = 145
+            try:
+                if isinstance(self.settings_ref, dict):
+                    hud_hex = str(self.settings_ref.get("hud_text_color", hud_hex))
+                    bg_alpha = int(self.settings_ref.get("hud_glass_bg_alpha", bg_alpha))
+            except Exception:
+                pass
+            text_main = QColor(hud_hex)
+            text_shadow = QColor(text_main); text_shadow.setAlpha(80)
+            panel_rect = QRect(0, 0, w, h)
+            grad_bg = QLinearGradient(0, 0, w, h)
+            grad_bg.setColorAt(0.0, QColor(12, 15, 22, bg_alpha))
+            grad_bg.setColorAt(0.5, QColor(10, 13, 20, min(bg_alpha+12, 210)))
+            grad_bg.setColorAt(1.0, QColor(8, 11, 18, min(bg_alpha+22, 218)))
+            painter.setBrush(QBrush(grad_bg))
+            painter.setPen(Qt.NoPen)
+            painter.drawRoundedRect(panel_rect.adjusted(1, 1, -1, -1), 14, 14)
+            # 渐变边框（更清晰）
+            grad_bdr = QLinearGradient(0, 0, w, 0)
+            grad_bdr.setColorAt(0.0, QColor(accent_a.red(), accent_a.green(), accent_a.blue(), 180))
+            grad_bdr.setColorAt(1.0, QColor(accent_b.red(), accent_b.green(), accent_b.blue(), 180))
+            painter.setBrush(Qt.NoBrush)
+            painter.setPen(QPen(QBrush(grad_bdr), 2.5, Qt.SolidLine, Qt.RoundCap))
+            painter.drawRoundedRect(panel_rect.adjusted(1, 1, -1, -1), 14, 14)
+            painter.setPen(QPen(QColor(255,255,255,40), 1))
+            painter.drawLine(10, 10, w-10, 10)
+            painter.setPen(QPen(QColor(0,0,0,65), 1))
+            painter.drawLine(10, h-11, w-10, h-11)
+            # 文本
+            left_pad = 12
+            right_pad = 12
+            top_y = 8
+            line_h = 24
+            painter.setFont(QFont("Segoe UI", 12, QFont.DemiBold))
+            fps_text = f"FPS {self.fps}" if self.fps > 0 else "FPS --"
+            cpu_temp_text = f"{int(self.cpu_temp)}°C" if isinstance(self.cpu_temp, (int, float)) else "--"
+            gpu_temp_text = f"{int(self.gpu_temp)}°C" if self.gpu_temp > 0 else "--"
+            cpu_text = f"CPU {self.cpu_usage:.0f}%  {cpu_temp_text}"
+            gpu_text = f"GPU {self.gpu_load:.0f}%  {gpu_temp_text}"
+            mem_text = f"内存 {self.mem_usage:.0f}%"  # 添加内存信息
+            painter.setPen(QPen(text_shadow, 2))
+            painter.drawText(QRect(left_pad, top_y, w - left_pad - right_pad, line_h), Qt.AlignLeft, fps_text)
+            painter.drawText(QRect(left_pad, top_y + line_h, w - left_pad - right_pad, line_h), Qt.AlignLeft, cpu_text)
+            painter.drawText(QRect(left_pad, top_y + 2*line_h, w - left_pad - right_pad, line_h), Qt.AlignLeft, gpu_text)
+            painter.drawText(QRect(left_pad, top_y + 3*line_h, w - left_pad - right_pad, line_h), Qt.AlignLeft, mem_text)
+            painter.setPen(QPen(text_main, 1))
+            painter.drawText(QRect(left_pad, top_y, w - left_pad - right_pad, line_h), Qt.AlignLeft, fps_text)
+            painter.drawText(QRect(left_pad, top_y + line_h, w - left_pad - right_pad, line_h), Qt.AlignLeft, cpu_text)
+            painter.drawText(QRect(left_pad, top_y + 2*line_h, w - left_pad - right_pad, line_h), Qt.AlignLeft, gpu_text)
+            painter.drawText(QRect(left_pad, top_y + 3*line_h, w - left_pad - right_pad, line_h), Qt.AlignLeft, mem_text)
+            # 使用率条
+            bar_left = left_pad + 72
+            bar_width = w - bar_left - right_pad
+            bar_h = 7
+            painter.setPen(Qt.NoPen)
+            track = QLinearGradient(bar_left, top_y, bar_left, top_y + line_h)
+            track.setColorAt(0.0, QColor(255,255,255,22))
+            track.setColorAt(1.0, QColor(255,255,255,34))
+            # CPU轨
+            cpu_rect = QRect(bar_left, top_y + line_h - 5, bar_width, bar_h)
+            painter.setBrush(QBrush(track))
+            painter.drawRoundedRect(cpu_rect, 3.5, 3.5)
+            cpu_fill_w = int(bar_width * max(0.0, min(self.cpu_usage/100.0, 1.0)))
+            if cpu_fill_w > 0:
+                cpu_fill = QRect(bar_left, top_y + line_h - 5, cpu_fill_w, bar_h)
+                grad_cpu = QLinearGradient(bar_left, 0, bar_left + cpu_fill_w, 0)
+                grad_cpu.setColorAt(0.0, QColor(accent_a.red(), accent_a.green(), accent_a.blue(), 230))
+                grad_cpu.setColorAt(1.0, QColor(accent_b.red(), accent_b.green(), accent_b.blue(), 230))
+                painter.setBrush(QBrush(grad_cpu))
+                painter.drawRoundedRect(cpu_fill, 3.5, 3.5)
+                painter.setBrush(Qt.NoBrush)
+                painter.setPen(QPen(QColor(255,255,255,90), 1))
+                painter.drawLine(bar_left+1, top_y + line_h - 5, bar_left + cpu_fill_w - 1, top_y + line_h - 5)
+            # GPU轨
+            gpu_rect = QRect(bar_left, top_y + 2*line_h - 5, bar_width, bar_h)
+            painter.setBrush(QBrush(track))
+            painter.drawRoundedRect(gpu_rect, 3.5, 3.5)
+            gpu_fill_w = int(bar_width * max(0.0, min(self.gpu_load/100.0, 1.0)))
+            if gpu_fill_w > 0:
+                gpu_fill = QRect(bar_left, top_y + 2*line_h - 5, gpu_fill_w, bar_h)
+                grad_gpu = QLinearGradient(bar_left, 0, bar_left + gpu_fill_w, 0)
+                grad_gpu.setColorAt(0.0, QColor(accent_b.red(), accent_b.green(), accent_b.blue(), 230))
+                grad_gpu.setColorAt(1.0, QColor(accent_a.red(), accent_a.green(), accent_a.blue(), 230))
+                painter.setBrush(QBrush(grad_gpu))
+                painter.drawRoundedRect(gpu_fill, 3.5, 3.5)
+                painter.setBrush(Qt.NoBrush)
+                painter.setPen(QPen(QColor(255,255,255,90), 1))
+                painter.drawLine(bar_left+1, top_y + 2*line_h - 5, bar_left + gpu_fill_w - 1, top_y + 2*line_h - 5)
+            # 内存轨
+            mem_rect = QRect(bar_left, top_y + 3*line_h - 5, bar_width, bar_h)
+            painter.setBrush(QBrush(track))
+            painter.drawRoundedRect(mem_rect, 3.5, 3.5)
+            mem_fill_w = int(bar_width * max(0.0, min(self.mem_usage/100.0, 1.0)))
+            if mem_fill_w > 0:
+                mem_fill = QRect(bar_left, top_y + 3*line_h - 5, mem_fill_w, bar_h)
+                grad_mem = QLinearGradient(bar_left, 0, bar_left + mem_fill_w, 0)
+                # 使用霓虹紫渐变色
+                accent_c = QColor(200, 100, 255)  # 亮紫
+                accent_d = QColor(120, 40, 180)   # 暗紫
+                grad_mem.setColorAt(0.0, QColor(accent_c.red(), accent_c.green(), accent_c.blue(), 230))
+                grad_mem.setColorAt(1.0, QColor(accent_d.red(), accent_d.green(), accent_d.blue(), 230))
+                painter.setBrush(QBrush(grad_mem))
+                painter.drawRoundedRect(mem_fill, 3.5, 3.5)
+                painter.setBrush(Qt.NoBrush)
+                painter.setPen(QPen(QColor(255,255,255,90), 1))
+                painter.drawLine(bar_left+1, top_y + 3*line_h - 5, bar_left + mem_fill_w - 1, top_y + 3*line_h - 5)
+            painter.end()
+            return
+
+        # 配色与玻璃质感：更柔和的磨砂 + 霓虹双层描边
+        accent1 = QColor("#00E5FF")  # 霓虹蓝
+        accent2 = QColor("#FF3FD0")  # 霓虹粉
+        hud_hex = "#A8F7FF"  # 文字默认偏亮
+        bg_alpha = 135
+        try:
+            if isinstance(self.settings_ref, dict):
+                hud_hex = str(self.settings_ref.get("hud_text_color", hud_hex))
+                bg_alpha = int(self.settings_ref.get("hud_glass_bg_alpha", bg_alpha))
+        except Exception:
+            pass
+        text_main = QColor(hud_hex)
+        text_glow = QColor(text_main)
+        text_glow.setAlpha(100)
+
+        # 玻璃面板背景（更平滑的纵向渐变）
+        panel_rect = QRect(0, 0, w, h)
+        grad_bg = QLinearGradient(0, 0, 0, h)
+        grad_bg.setColorAt(0.0, QColor(14, 16, 24, bg_alpha))
+        grad_bg.setColorAt(0.5, QColor(12, 14, 22, min(bg_alpha+15, 210)))
+        grad_bg.setColorAt(1.0, QColor(10, 12, 20, min(bg_alpha+25, 215)))
+        painter.setBrush(QBrush(grad_bg))
+        painter.setPen(Qt.NoPen)
+        painter.drawRoundedRect(panel_rect.adjusted(1, 1, -1, -1), 12, 12)
+
+        # 角落霓虹氛围光（增强科技感）
+        painter.setPen(Qt.NoPen)
+        glow1 = QRadialGradient(QPoint(18, 18), 60)
+        glow1.setColorAt(0.0, QColor(accent1.red(), accent1.green(), accent1.blue(), 70))
+        glow1.setColorAt(1.0, QColor(0, 0, 0, 0))
+        painter.setBrush(QBrush(glow1))
+        painter.drawEllipse(QPoint(18, 18), 60, 60)
+        glow2 = QRadialGradient(QPoint(w-18, h-18), 60)
+        glow2.setColorAt(0.0, QColor(accent2.red(), accent2.green(), accent2.blue(), 70))
+        glow2.setColorAt(1.0, QColor(0, 0, 0, 0))
+        painter.setBrush(QBrush(glow2))
+        painter.drawEllipse(QPoint(w-18, h-18), 60, 60)
+
+        # 外框双层描边：外层柔光 + 内层清晰
+        grad_border = QLinearGradient(0, 0, w, 0)
+        grad_border.setColorAt(0.0, QColor(accent1.red(), accent1.green(), accent1.blue(), 160))
+        grad_border.setColorAt(1.0, QColor(accent2.red(), accent2.green(), accent2.blue(), 160))
+        painter.setBrush(Qt.NoBrush)
+        painter.setPen(QPen(QBrush(grad_border), 3, Qt.SolidLine, Qt.RoundCap))
+        painter.drawRoundedRect(panel_rect.adjusted(1, 1, -1, -1), 12, 12)
+        painter.setPen(QPen(QBrush(grad_border), 1.5, Qt.SolidLine, Qt.RoundCap))
+        painter.drawRoundedRect(panel_rect.adjusted(2, 2, -2, -2), 12, 12)
+
+        # 顶部高光与底部阴影
+        painter.setPen(QPen(QColor(255, 255, 255, 40), 1))
+        painter.drawLine(10, 9, w-10, 9)
+        painter.setPen(QPen(QColor(0, 0, 0, 60), 1))
+        painter.drawLine(10, h-10, w-10, h-10)
+
+        # 文本与使用率条
+        left_pad = 12
+        top_y = 8
+        line_h = 24
+        bar_h = 7
+        right_pad = 12
+        text_font = QFont("Segoe UI", 12, QFont.DemiBold)
+        painter.setFont(text_font)
+
         fps_text = f"FPS {self.fps}" if self.fps > 0 else "FPS --"
-        cpu_temp_text = f"{int(self.cpu_temp)}°" if isinstance(self.cpu_temp, (int, float)) else "--"
-        gpu_temp_text = f"{int(self.gpu_temp)}°" if self.gpu_temp > 0 else "--"
-        cpu_text = f"CPU {self.cpu_usage:.0f}% {cpu_temp_text}"
-        gpu_text = f"GPU {self.gpu_load:.0f}% {gpu_temp_text}"
-        painter.drawText(QRect(0, top_y, self.width(), line_h), Qt.AlignLeft, fps_text)
-        painter.drawText(QRect(0, top_y+line_h, self.width(), line_h), Qt.AlignLeft, cpu_text)
-        painter.drawText(QRect(0, top_y+2*line_h, self.width(), line_h), Qt.AlignLeft, gpu_text)
+        cpu_temp_text = f"{int(self.cpu_temp)}°C" if isinstance(self.cpu_temp, (int, float)) else "--"
+        gpu_temp_text = f"{int(self.gpu_temp)}°C" if self.gpu_temp > 0 else "--"
+        cpu_text = f"CPU {self.cpu_usage:.0f}%  {cpu_temp_text}"
+        gpu_text = f"GPU {self.gpu_load:.0f}%  {gpu_temp_text}"
+
+        # 霓虹发光文本（柔光层 + 清晰层）
+        painter.setPen(QPen(text_glow, 2))
+        painter.drawText(QRect(left_pad, top_y, w - left_pad - right_pad, line_h), Qt.AlignLeft, fps_text)
+        painter.drawText(QRect(left_pad, top_y + line_h, w - left_pad - right_pad, line_h), Qt.AlignLeft, cpu_text)
+        painter.drawText(QRect(left_pad, top_y + 2*line_h, w - left_pad - right_pad, line_h), Qt.AlignLeft, gpu_text)
+        painter.setPen(QPen(text_main, 1))
+        painter.drawText(QRect(left_pad, top_y, w - left_pad - right_pad, line_h), Qt.AlignLeft, fps_text)
+        painter.drawText(QRect(left_pad, top_y + line_h, w - left_pad - right_pad, line_h), Qt.AlignLeft, cpu_text)
+        painter.drawText(QRect(left_pad, top_y + 2*line_h, w - left_pad - right_pad, line_h), Qt.AlignLeft, gpu_text)
+
+        # 使用率条（底轨更柔和、前景更通透）
+        bar_left = left_pad + 72
+        bar_width = w - bar_left - right_pad
+        # CPU底轨
+        cpu_bar_rect = QRect(bar_left, top_y + line_h - 5, bar_width, bar_h)
+        painter.setPen(Qt.NoPen)
+        grad_track = QLinearGradient(cpu_bar_rect.left(), cpu_bar_rect.top(), cpu_bar_rect.left(), cpu_bar_rect.bottom())
+        grad_track.setColorAt(0.0, QColor(255, 255, 255, 22))
+        grad_track.setColorAt(1.0, QColor(255, 255, 255, 36))
+        painter.setBrush(QBrush(grad_track))
+        painter.drawRoundedRect(cpu_bar_rect, 3.5, 3.5)
+        # CPU填充
+        cpu_fill_w = int(bar_width * max(0.0, min(self.cpu_usage/100.0, 1.0)))
+        if cpu_fill_w > 0:
+            cpu_fill = QRect(bar_left, top_y + line_h - 5, cpu_fill_w, bar_h)
+            grad_cpu = QLinearGradient(bar_left, 0, bar_left + cpu_fill_w, 0)
+            grad_cpu.setColorAt(0.0, QColor(accent1.red(), accent1.green(), accent1.blue(), 230))
+            grad_cpu.setColorAt(1.0, QColor(accent2.red(), accent2.green(), accent2.blue(), 230))
+            painter.setBrush(QBrush(grad_cpu))
+            painter.drawRoundedRect(cpu_fill, 3.5, 3.5)
+            # 顶部高光线与末端霓虹点
+            painter.setBrush(Qt.NoBrush)
+            painter.setPen(QPen(QColor(255, 255, 255, 90), 1))
+            painter.drawLine(bar_left+1, top_y + line_h - 5, bar_left + cpu_fill_w - 1, top_y + line_h - 5)
+            painter.setPen(QPen(QColor(accent2.red(), accent2.green(), accent2.blue(), 200), 4, Qt.SolidLine, Qt.RoundCap))
+            painter.drawLine(bar_left + cpu_fill_w, top_y + line_h - 2, bar_left + cpu_fill_w, top_y + line_h - 2)
+
+        # GPU底轨
+        gpu_bar_rect = QRect(bar_left, top_y + 2*line_h - 5, bar_width, bar_h)
+        painter.setPen(Qt.NoPen)
+        painter.setBrush(QBrush(grad_track))
+        painter.drawRoundedRect(gpu_bar_rect, 3.5, 3.5)
+        # GPU填充
+        gpu_fill_w = int(bar_width * max(0.0, min(self.gpu_load/100.0, 1.0)))
+        if gpu_fill_w > 0:
+            gpu_fill = QRect(bar_left, top_y + 2*line_h - 5, gpu_fill_w, bar_h)
+            grad_gpu = QLinearGradient(bar_left, 0, bar_left + gpu_fill_w, 0)
+            grad_gpu.setColorAt(0.0, QColor(accent2.red(), accent2.green(), accent2.blue(), 230))
+            grad_gpu.setColorAt(1.0, QColor(accent1.red(), accent1.green(), accent1.blue(), 230))
+            painter.setBrush(QBrush(grad_gpu))
+            painter.drawRoundedRect(gpu_fill, 3.5, 3.5)
+            painter.setBrush(Qt.NoBrush)
+            painter.setPen(QPen(QColor(255, 255, 255, 90), 1))
+            painter.drawLine(bar_left+1, top_y + 2*line_h - 5, bar_left + gpu_fill_w - 1, top_y + 2*line_h - 5)
+            painter.setPen(QPen(QColor(accent1.red(), accent1.green(), accent1.blue(), 200), 4, Qt.SolidLine, Qt.RoundCap))
+            painter.drawLine(bar_left + gpu_fill_w, top_y + 2*line_h - 2, bar_left + gpu_fill_w, top_y + 2*line_h - 2)
+
+        # 底部细分割线（轻量）
+        painter.setPen(QPen(QColor(255, 255, 255, 35), 1))
+        painter.drawLine(left_pad, h-12, w-right_pad, h-12)
+
         painter.end()
 
-    def closeEvent(self, event):
-        event.ignore()
-
-    
     def closeEvent(self, event):
         """关闭窗口事件处理"""
         # 默认不关闭程序，只隐藏主窗口
         self.hide()
         # 确保即使隐藏时也安全停止线程（如果需要）
-        if hasattr(self, 'worker') and self.worker.isRunning():
-            self.worker.stop()
+        try:
+            if hasattr(self, 'worker') and self.worker.isRunning():
+                self.worker.stop()
+        except Exception as e:
+            logger.warning(f"关闭线程时出错: {e}")
         event.ignore()  # 忽略关闭事件
 
 if __name__ == "__main__":
@@ -3737,30 +4756,53 @@ if __name__ == "__main__":
     except Exception as e:
         print(f"日志系统初始化失败: {e}")
     
-    # 首先设置正确的QT_PLUGIN_PATH环境变量
+    # 增强版Qt环境变量设置，提高打包稳定性
     try:
         # 检查是否为PyInstaller打包后的程序
         if hasattr(sys, '_MEIPASS'):
-            # 获取PyInstaller临时目录下的plugins路径（修正为Qt5而不是Qt）
-            pyqt5_plugins_path = os.path.join(sys._MEIPASS, 'PyQt5', 'Qt5', 'plugins')
-            if os.path.exists(pyqt5_plugins_path):
-                os.environ["QT_QPA_PLATFORM_PLUGIN_PATH"] = pyqt5_plugins_path
-                logger.info(f"设置QT_QPA_PLATFORM_PLUGIN_PATH={pyqt5_plugins_path}")
+            # 尝试多种可能的插件路径结构
+            plugin_paths = [
+                os.path.join(sys._MEIPASS, 'PyQt5', 'Qt5', 'plugins'),
+                os.path.join(sys._MEIPASS, 'Qt5', 'plugins'),
+                os.path.join(sys._MEIPASS, 'plugins')
+            ]
+            
+            for path in plugin_paths:
+                if os.path.exists(path):
+                    os.environ["QT_QPA_PLATFORM_PLUGIN_PATH"] = path
+                    logger.info(f"设置QT_QPA_PLATFORM_PLUGIN_PATH={path}")
+                    break
+            
+            # 确保必要的Qt库在PATH中
+            qt_bin_paths = [
+                os.path.join(sys._MEIPASS, 'PyQt5', 'Qt5', 'bin'),
+                os.path.join(sys._MEIPASS, 'Qt5', 'bin'),
+                os.path.join(sys._MEIPASS, 'bin')
+            ]
+            
+            for path in qt_bin_paths:
+                if os.path.exists(path) and path not in os.environ["PATH"]:
+                    os.environ["PATH"] = path + ";" + os.environ["PATH"]
+                    logger.info(f"添加到PATH: {path}")
         else:
             # 获取PyQt5的安装路径
-            import PyQt5
-            pyqt5_path = os.path.dirname(PyQt5.__file__)
-            
-            # 设置正确的plugins路径（从测试脚本中确认的路径）
-            qt5_plugins_path = os.path.join(pyqt5_path, "Qt5", "plugins")
-            logger.info(f"设置QT_QPA_PLATFORM_PLUGIN_PATH={qt5_plugins_path}")
-            os.environ["QT_QPA_PLATFORM_PLUGIN_PATH"] = qt5_plugins_path
-            
-            # 同时确保Qt5/bin目录在PATH中
-            qt5_bin_path = os.path.join(pyqt5_path, "Qt5", "bin")
-            if os.path.exists(qt5_bin_path):
-                if qt5_bin_path not in os.environ["PATH"]:
+            try:
+                import PyQt5
+                pyqt5_path = os.path.dirname(PyQt5.__file__)
+                
+                # 设置正确的plugins路径
+                qt5_plugins_path = os.path.join(pyqt5_path, "Qt5", "plugins")
+                if os.path.exists(qt5_plugins_path):
+                    os.environ["QT_QPA_PLATFORM_PLUGIN_PATH"] = qt5_plugins_path
+                    logger.info(f"设置QT_QPA_PLATFORM_PLUGIN_PATH={qt5_plugins_path}")
+                
+                # 同时确保Qt5/bin目录在PATH中
+                qt5_bin_path = os.path.join(pyqt5_path, "Qt5", "bin")
+                if os.path.exists(qt5_bin_path) and qt5_bin_path not in os.environ["PATH"]:
                     os.environ["PATH"] = qt5_bin_path + ";" + os.environ["PATH"]
+                    logger.info(f"添加到PATH: {qt5_bin_path}")
+            except ImportError:
+                logger.warning("无法导入PyQt5，跳过环境变量设置")
     except Exception as e:
         logger.error(f"设置Qt环境变量时出错: {e}")
         print(f"设置Qt环境变量时出错: {e}")
@@ -3779,6 +4821,7 @@ if __name__ == "__main__":
     try:
         logger.info("开始创建QApplication...")
         app = QApplication(sys.argv)
+        app.setQuitOnLastWindowClosed(False)
         logger.info("QApplication创建成功")
         
         # 确保中文显示正常
@@ -3786,6 +4829,52 @@ if __name__ == "__main__":
         font = QFont("SimHei")
         app.setFont(font)
         logger.info("字体设置成功")
+
+        # 增强的全局异常钩子，提供更详细的错误信息并确保程序不会静默崩溃
+        import traceback as _traceback
+        def _handle_exception(exctype, value, tb):
+            try:
+                error_msg = f"未捕获的异常: {exctype.__name__}: {value}"
+                tb_str = ''.join(_traceback.format_exception(exctype, value, tb))
+                logger.error(error_msg)
+                logger.error(f"堆栈跟踪: {tb_str}")
+                
+                # 保存错误信息到桌面文件，方便调试
+                try:
+                    desktop_path = os.path.join(os.path.expanduser("~"), "Desktop")
+                    error_log_path = os.path.join(desktop_path, "悬浮球错误日志.txt")
+                    with open(error_log_path, "a", encoding="utf-8") as f:
+                        f.write(f"\n{time.strftime('%Y-%m-%d %H:%M:%S')}\n")
+                        f.write(error_msg + "\n")
+                        f.write(tb_str + "\n")
+                    logger.info(f"错误日志已保存到: {error_log_path}")
+                except Exception as log_err:
+                    logger.warning(f"无法保存错误日志到桌面: {log_err}")
+                
+                # 在控制台打印错误
+                _traceback.print_exception(exctype, value, tb)
+                
+                # 如果是在调试模式，显示错误对话框
+                if not SAFE_PACKAGED_MODE:
+                    try:
+                        msg_box = QMessageBox()
+                        msg_box.setIcon(QMessageBox.Critical)
+                        msg_box.setText("程序发生未捕获的异常")
+                        msg_box.setInformativeText(f"{exctype.__name__}: {value}")
+                        msg_box.setDetailedText(tb_str)
+                        msg_box.setWindowTitle("错误")
+                        msg_box.exec_()
+                    except Exception:
+                        pass
+            except Exception:
+                # 如果连异常处理都失败了，至少在控制台打印
+                print("异常处理程序本身也失败了")
+                _traceback.print_exception(exctype, value, tb)
+        sys.excepthook = _handle_exception
+        try:
+            app.aboutToQuit.connect(lambda: logger.info("aboutToQuit触发，应用即将退出"))
+        except Exception:
+            pass
         
         logger.info("开始创建FloatingBall实例...")
         floating_ball = FloatingBall()
