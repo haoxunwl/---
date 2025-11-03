@@ -10,8 +10,9 @@
 <img width="444" height="443" alt="屏幕截图 2025-10-25 223351" src="https://github.com/user-attachments/assets/a4cadc80-21a1-4963-9b06-59cfba11b905" />
 <img width="279" height="170" alt="屏幕截图 2025-10-26 102638" src="https://github.com/user-attachments/assets/4c75fa6a-8f0d-416f-bd58-318311522fa1" />
 <img width="155" height="258" alt="屏幕截图 2025-10-26 102701" src="https://github.com/user-attachments/assets/e476cd0a-280c-4185-9d0d-6624d8c60485" />
-
-
+下载链接：
+通过网盘分享的文件：浩讯悬浮球.zip
+链接: https://pan.baidu.com/s/1IlF3AsJxuNPIolJbHxIzMA 提取码: hxdn 复制这段内容后打开百度网盘手机App，操作更方便哦
 项目开发日志： 2025年10月10日 初代程序版本1.0 1.发布了初代产品程序1.0
               25/10/26 1.新增加fps游戏帧数获取和显示，游戏内电脑信息显示
                        2.新增缓存清理功能
